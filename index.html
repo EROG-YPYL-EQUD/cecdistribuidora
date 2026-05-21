@@ -1,0 +1,1453 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ERP Financeiro - Sistema Integrado</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<!-- ============================================================
+     FIREBASE — Auth + Realtime Database
+     Todos os dados são salvos em:
+     /users/{uid}/{chave}  (ex: /users/abc123/despesas)
+============================================================ -->
+<script type="module">
+  import { initializeApp }
+    from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
+    from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+  import { getDatabase, ref, set, get, child }
+    from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyCSfaj4BFBLppeYNYLRZfLCdqRhomnGIC8",
+    authDomain: "cecdistribuidora-5e148.firebaseapp.com",
+    databaseURL: "https://cecdistribuidora-5e148-default-rtdb.firebaseio.com",
+    projectId: "cecdistribuidora-5e148",
+    storageBucket: "cecdistribuidora-5e148.firebasestorage.app",
+    messagingSenderId: "761298781257",
+    appId: "1:761298781257:web:4e0d2d8142dc892c23eb98",
+    measurementId: "G-LE6VJNJ5Q1"
+  };
+
+  const app  = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const database = getDatabase(app);
+
+  // ── Expor ao escopo global ────────────────────────────────────
+  window._auth       = auth;
+  window._db         = database;
+  window._dbRef      = ref;
+  window._dbSet      = set;
+  window._dbGet      = get;
+  window._dbChild    = child;
+  window._signInFn   = signInWithEmailAndPassword;
+  window._signOutFn  = signOut;
+
+  // ── Monitor de sessão ─────────────────────────────────────────
+  async function aguardarSistemaPronto(){
+    // Evita travar em "Verificando sessão..." quando o DOMContentLoaded já passou.
+    if (typeof window.carregarDadosFirebase === 'function') return true;
+
+    if (document.readyState === 'loading') {
+      await new Promise(resolve => window.addEventListener('DOMContentLoaded', resolve, { once:true }));
+    }
+
+    let tentativas = 0;
+    while (typeof window.carregarDadosFirebase !== 'function' && tentativas < 50) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      tentativas++;
+    }
+
+    return typeof window.carregarDadosFirebase === 'function';
+  }
+
+  onAuthStateChanged(auth, async (user) => {
+    const sistemaPronto = await aguardarSistemaPronto();
+
+    if (!sistemaPronto) {
+      console.error('Sistema não inicializou: carregarDadosFirebase não ficou disponível.');
+      const loading = document.getElementById('login-loading');
+      if (loading) loading.style.display = 'none';
+      const login = document.getElementById('login-screen');
+      if (login) login.style.display = 'flex';
+      return;
+    }
+
+    if (user) {
+      window._uid = "HAbxSDyPUDg2Bc9CRbRLQMTo0UM2"; // UID fixo do banco com seus dados
+      window.mostrarCarregando?.("Carregando dados do Firebase...");
+      try {
+        await window.carregarDadosFirebase();          // lê tudo do Firebase em /users/{uid}
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('main-app').style.display = 'block';
+        window.atualizarSaudacaoGlobal?.();
+        window.mudarAba?.('dashboard');
+      } catch (err) {
+        console.error('Erro ao abrir sistema:', err);
+        document.getElementById('login-screen').style.display = 'flex';
+        document.getElementById('main-app').style.display = 'none';
+      } finally {
+        window.esconderCarregando?.();
+      }
+    } else {
+      window._uid = null;
+      document.getElementById('login-screen').style.display = 'flex';
+      document.getElementById('main-app').style.display = 'none';
+      window.esconderCarregando?.();
+    }
+  });
+</script>
+
+<style>
+*{ margin:0; padding:0; box-sizing:border-box; font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif; }
+body{ background:#020617; color:#e2e8f0; overflow-x:hidden; }
+
+/* LOADING / OVERLAY */
+#login-loading{
+  position:fixed; top:0; left:0; width:100%; height:100%;
+  background:#020617; display:flex; flex-direction:column;
+  justify-content:center; align-items:center; z-index:20000; gap:20px;
+}
+.spinner{ width:48px; height:48px; border:4px solid #1e293b; border-top-color:#3b82f6; border-radius:50%; animation:spin .8s linear infinite; }
+@keyframes spin{ to{ transform:rotate(360deg); } }
+#loading-msg{ color:#94a3b8; font-size:14px; }
+
+/* TOAST DE SALVAMENTO */
+#save-toast{
+  position:fixed; bottom:24px; right:24px; background:#22c55e; color:#fff;
+  padding:10px 20px; border-radius:10px; font-size:13px; font-weight:700;
+  display:none; z-index:99999; box-shadow:0 4px 14px rgba(0,0,0,0.4);
+  animation:fadeInUp .3s ease;
+}
+@keyframes fadeInUp{ from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+
+/* LOGIN */
+#login-screen{
+  position:fixed; top:0; left:0; width:100%; height:100%;
+  background:#020617; display:none; justify-content:center; align-items:center; z-index:10000;
+}
+.login-box{
+  background:#0f172a; padding:40px; border-radius:24px; border:1px solid #1e293b;
+  width:400px; max-width:90%; box-shadow:0 20px 50px rgba(0,0,0,.5); text-align:center;
+}
+.login-box h1{ font-size:28px; margin-bottom:10px; color:#fff; }
+.login-box>p{ color:#94a3b8; margin-bottom:30px; font-size:14px; }
+.login-input-group{ text-align:left; margin-bottom:20px; }
+.login-input-group label{ display:block; margin-bottom:8px; color:#94a3b8; font-size:13px; }
+.login-input-group input{
+  width:100%; padding:14px; background:#020617; border:1px solid #334155;
+  border-radius:12px; color:#fff; outline:none; transition:.3s;
+}
+.login-input-group input:focus{ border-color:#3b82f6; box-shadow:0 0 0 2px rgba(59,130,246,.2); }
+.btn-login{
+  width:100%; padding:14px; background:#2563eb; color:#fff; border:none;
+  border-radius:12px; font-weight:700; font-size:16px; cursor:pointer; transition:.3s; margin-top:10px;
+}
+.btn-login:hover{ background:#1d4ed8; transform:translateY(-2px); }
+.btn-login:disabled{ background:#334155; cursor:not-allowed; transform:none; }
+
+/* APP */
+#main-app{ display:none; }
+.main-nav{
+  display:flex; background:#0f172a; padding:0 20px; border-bottom:2px solid #1e293b;
+  gap:30px; position:sticky; top:0; z-index:1000; justify-content:space-between; align-items:center;
+}
+.nav-tabs-container{ display:flex; gap:30px; }
+.nav-tab{
+  padding:18px 10px; color:#94a3b8; cursor:pointer; font-weight:700; font-size:15px;
+  border-bottom:3px solid transparent; transition:.3s; text-transform:uppercase; letter-spacing:1px;
+}
+.nav-tab:hover{ color:#fff; }
+.nav-tab.active{ color:#3b82f6; border-bottom-color:#3b82f6; }
+.nav-actions{ display:flex; align-items:center; gap:15px; }
+.config-btn{ color:#94a3b8; font-size:13px; font-weight:600; cursor:pointer; padding:8px 15px; border-radius:8px; transition:.2s; }
+.config-btn:hover{ background:rgba(148,163,184,.1); color:#fff; }
+.logout-btn{ color:#ef4444; font-size:13px; font-weight:600; cursor:pointer; padding:8px 15px; border-radius:8px; transition:.2s; }
+.logout-btn:hover{ background:rgba(239,68,68,.1); }
+
+.submenu{
+  display:none; gap:10px; padding:16px 24px; background:#020617;
+  border-bottom:1px solid #1e293b; overflow-x:auto; position:sticky; top:57px; z-index:999;
+}
+.menu-btn{
+  background:#1e293b; color:#94a3b8; border:1px solid #334155; padding:8px 14px;
+  border-radius:8px; cursor:pointer; font-weight:600; transition:.2s; white-space:nowrap; font-size:13px;
+}
+.menu-btn:hover{ background:#334155; color:#fff; }
+.menu-btn.active{ background:#2563eb; color:#fff; border-color:#3b82f6; }
+
+#conteudo{ padding:24px; }
+h2{ margin-bottom:18px; font-size:24px; font-weight:700; }
+h3{ margin-bottom:18px; font-size:20px; }
+
+button{ cursor:pointer; padding:10px 14px; border:none; border-radius:10px; font-weight:600; margin-right:8px; transition:.2s; }
+button:hover{ opacity:.92; }
+.btn-primary{ background:#2563eb; color:#fff; }
+.btn-secondary{ background:#334155; color:#fff; }
+.btn-danger{ background:#ef4444; color:#fff; }
+.btn-small{ padding:4px 8px; font-size:11px; border-radius:6px; margin-left:5px; }
+
+.card{ background:#0f172a; border:1px solid #1e293b; padding:20px; border-radius:16px; margin-bottom:14px; box-shadow:0 4px 14px rgba(0,0,0,.25); }
+
+.greeting-bar{
+  background:#0f172a; padding:20px 30px; border-radius:20px; border:1px solid #1e293b;
+  display:flex; justify-content:space-between; align-items:center;
+  margin:20px; box-shadow:0 4px 20px rgba(0,0,0,.3);
+}
+.greeting-text h2{ margin:0; font-size:24px; color:#fff; }
+.greeting-text p{ margin:5px 0 0 0; font-size:14px; color:#94a3b8; text-transform:capitalize; }
+.status-realtime{ display:flex; align-items:center; gap:15px; }
+.status-dot{ width:8px; height:8px; background:#22c55e; border-radius:50%; box-shadow:0 0 10px #22c55e; }
+.status-label{ font-size:12px; color:#94a3b8; }
+.refresh-btn{
+  background:#f97316; width:40px; height:40px; border-radius:50%; display:flex;
+  justify-content:center; align-items:center; cursor:pointer; transition:.3s; border:none; color:#fff;
+}
+.refresh-btn:hover{ transform:rotate(180deg); background:#ea580c; }
+
+.dash-header{
+  display:flex; justify-content:space-between; align-items:center; margin-bottom:24px;
+  flex-wrap:wrap; gap:15px; background:#0f172a; padding:20px; border-radius:16px; border:1px solid #1e293b;
+}
+.dash-filters{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.dash-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:20px; margin-bottom:24px; align-items:stretch; }
+.dash-card{
+  padding:20px; border-radius:16px; border:1px solid #1e293b; position:relative;
+  overflow:hidden; background:#0f172a; display:flex; flex-direction:column;
+  justify-content:flex-start; min-height:120px; box-sizing:border-box; box-shadow:0 4px 6px rgba(0,0,0,.1);
+}
+.dash-card h4{ font-size:14px; color:#94a3b8; margin-bottom:8px; display:flex; align-items:center; gap:8px; }
+.dash-card .value{ font-size:24px; font-weight:700; }
+
+.card-receita{ border-left:4px solid #22c55e; }
+.card-despesa{ border-left:4px solid #ef4444; }
+.card-lucro{ border-left:4px solid #3b82f6; }
+.card-prejuizo{ border-left:4px solid #ef4444; }
+.card-caixa{ border-left:4px solid #a855f7; }
+.card-ia{ border-left:4px solid #f59e0b; height:120px; overflow:hidden; }
+.ia-insights{ max-height:calc(100% - 22px); overflow-y:auto; padding-right:5px; flex-grow:1; }
+
+.card-vendido,.card-saldo-atual{ border-left:4px solid #3b82f6; }
+.card-vendedores,.card-saldo-dia{ border-left:4px solid #a855f7; }
+.card-total-comissao,.card-projecao-30{ border-left:4px solid #22c55e; }
+.card-media-comissao,.card-prazo-pagto,.card-prazo-receb{ border-left:4px solid #ef4444; }
+
+.main-grid{ display:grid; grid-template-columns:2fr 1fr; gap:20px; }
+@media(max-width:1000px){ .main-grid{ grid-template-columns:1fr; } }
+
+@media(max-width:768px){
+  .main-nav{ flex-direction:column; padding:15px 10px; gap:15px; position:relative; }
+  .nav-tabs-container{ width:100%; justify-content:space-around; gap:5px; }
+  .nav-tab{ padding:10px 5px; font-size:12px; flex:1; text-align:center; }
+  .nav-actions{ width:100%; justify-content:center; border-top:1px solid #1e293b; padding-top:10px; }
+  .greeting-bar{ flex-direction:column; text-align:center; gap:15px; padding:20px; margin:10px; }
+  .submenu{ top:0; padding:10px; }
+  .dash-header{ flex-direction:column; padding:15px; }
+  .dash-filters{ width:100%; flex-direction:column; }
+  .dash-grid{ grid-template-columns:1fr; gap:15px; }
+  .main-grid{ grid-template-columns:1fr; }
+  .card{ padding:15px; margin-bottom:10px; }
+  .modal-box{ width:95%; max-height:90vh; overflow-y:auto; padding:20px; }
+  table{ font-size:12px; min-width:600px; }
+}
+
+.score-item{ margin-bottom:15px; }
+.score-label{ display:flex; justify-content:space-between; font-size:13px; margin-bottom:5px; }
+.progress-bg{ background:#1e293b; height:8px; border-radius:4px; overflow:hidden; }
+.progress-fill{ height:100%; border-radius:4px; }
+
+.multi-select-box{
+  background:#0f172a; border:1px solid #334155; padding:10px; border-radius:10px;
+  height:120px; overflow-y:auto; display:none; position:absolute; z-index:100;
+  width:250px; right:0; top:45px; box-shadow:0 10px 20px rgba(0,0,0,.5);
+}
+.multi-select-item{ display:flex; align-items:center; gap:10px; padding:8px; cursor:pointer; font-size:13px; border-bottom:1px solid #1e293b; }
+.multi-select-item:last-child{ border-bottom:none; }
+.multi-select-item:hover{ background:#1e293b; }
+
+#modal{
+  display:none; position:fixed; top:0; left:0; width:100%; height:100%;
+  background:rgba(0,0,0,.78); justify-content:center; align-items:center; z-index:9999;
+}
+.modal-box{
+  background:#020617; width:620px; max-width:94%; padding:18px; border-radius:14px;
+  border:1px solid #334155; box-shadow:0 10px 26px rgba(0,0,0,.35); max-height:85vh; overflow:auto;
+}
+
+label{ display:block; margin-top:10px; margin-bottom:4px; font-size:13px; font-weight:600; }
+input,select{ width:100%; padding:10px 12px; border-radius:10px; border:1px solid #334155; background:#0f172a; color:#fff; outline:none; font-size:13px; }
+input:focus,select:focus{ border-color:#2563eb; }
+.modal-actions{ margin-top:18px; display:flex; justify-content:flex-end; gap:8px; }
+
+table{ width:100%; border-collapse:collapse; margin-top:18px; font-size:13px; }
+th,td{ padding:12px; text-align:left; border-bottom:1px solid #1e293b; }
+th{ background:#0f172a; color:#94a3b8; font-weight:600; }
+tr:hover{ background:#0b1220; }
+
+.row{ display:flex; justify-content:space-between; align-items:center; }
+hr{ border:none; height:1px; background:#1e293b; margin:18px 0; }
+.item-list{ display:flex; justify-content:space-between; align-items:center; padding:4px 0; }
+.detail{ display:none; margin-top:10px; padding:10px; background:rgba(255,255,255,.05); border-radius:8px; font-size:12px; color:#94a3b8; }
+
+/* Badge Firebase */
+.firebase-badge{
+  display:inline-flex; align-items:center; gap:6px; background:rgba(251,146,60,.1);
+  border:1px solid rgba(251,146,60,.3); color:#fb923c; font-size:11px; font-weight:700;
+  padding:4px 10px; border-radius:20px;
+}
+</style>
+</head>
+<body>
+
+<!-- LOADING / SAVING OVERLAY -->
+<div id="login-loading">
+  <div class="spinner"></div>
+  <span id="loading-msg">Verificando sessão...</span>
+</div>
+
+<!-- TOAST SALVO -->
+<div id="save-toast">✓ Salvo no Firebase</div>
+
+<!-- TELA DE LOGIN -->
+<div id="login-screen">
+  <div class="login-box">
+    <h1>ERP Financeiro</h1>
+    <p>Acesse sua conta para gerenciar seu negócio</p>
+    <div class="login-input-group">
+      <label>E-mail</label>
+      <input type="email" id="login-email" placeholder="seu@email.com"
+        onkeydown="if(event.key==='Enter') realizarLogin()">
+    </div>
+    <div class="login-input-group">
+      <label>Senha</label>
+      <input type="password" id="login-pass" placeholder="Sua senha"
+        onkeydown="if(event.key==='Enter') realizarLogin()">
+    </div>
+    <button class="btn-login" id="btn-entrar" onclick="realizarLogin()">Entrar no Sistema</button>
+    <p id="login-error" style="color:#ef4444; margin-top:15px; display:none; font-size:13px;"></p>
+  </div>
+</div>
+
+<!-- SISTEMA PRINCIPAL -->
+<div id="main-app">
+  <div id="global-greeting" class="greeting-bar" style="margin:20px; border-radius:15px;"></div>
+
+  <div class="main-nav">
+    <div class="nav-tabs-container">
+      <div id="tab-dashboard" class="nav-tab" onclick="mudarAba('dashboard')">Dashboard</div>
+      <div id="tab-gestao" class="nav-tab" onclick="mudarAba('gestao')">Gestão Financeira</div>
+    </div>
+    <div class="nav-actions">
+      <span class="firebase-badge">🔥 Firebase</span>
+      <div class="config-btn" onclick="abrirConfiguracoes()">Configurações</div>
+      <div class="logout-btn" onclick="realizarLogout()">Sair</div>
+    </div>
+  </div>
+
+  <div id="submenu-dashboard" class="submenu">
+    <button id="btn-dash-geral"      class="menu-btn" onclick="abrirDash('geral')">Geral</button>
+    <button id="btn-dash-comissoes"  class="menu-btn" onclick="abrirDash('comissoes')">Comissões</button>
+    <button id="btn-dash-fluxo"      class="menu-btn" onclick="abrirDash('fluxo')">Fluxo de Caixa</button>
+    <button id="btn-dash-dre"        class="menu-btn" onclick="abrirDash('dre')">DRE</button>
+  </div>
+
+  <div id="submenu-gestao" class="submenu">
+    <button id="btn-contas"       class="menu-btn" onclick="abrirTela('contas')">Contas</button>
+    <button id="btn-clientes"     class="menu-btn" onclick="abrirTela('clientes')">Clientes</button>
+    <button id="btn-fornecedores" class="menu-btn" onclick="abrirTela('fornecedores')">Fornecedores</button>
+    <button id="btn-vendedores"   class="menu-btn" onclick="abrirTela('vendedores')">Vendedores</button>
+    <button id="btn-despesas"     class="menu-btn" onclick="abrirTela('despesas')">Despesas</button>
+    <button id="btn-receitas"     class="menu-btn" onclick="abrirTela('receitas')">Receitas</button>
+  </div>
+
+  <div id="conteudo"></div>
+</div>
+
+<!-- MODAL -->
+<div id="modal" onclick="if(event.target===this)closeModal()">
+  <div class="modal-box"><div id="modal-body"></div></div>
+</div>
+
+<script>
+/* ================================================================
+   BANCO DE DADOS LOCAL (espelho em memória do Firebase)
+================================================================ */
+let db = {
+  contas:[],clientes:[],fornecedores:[],vendedores:[],
+  despesas:[],gruposDespesas:[],subgruposDespesas:[],
+  receitas:[],gruposReceitas:[],subgruposReceitas:[],
+  empresa:{nome:"",doc:"",end:"",cidade:"",estado:"",tel:"",email:""}
+};
+
+let abaAtiva='dashboard', telaAtiva='contas', dashAtivo='geral';
+let filtroPeriodo='mes_atual', dataInicioCustom='', dataFimCustom='', mesesSelecionados=[];
+
+/* ================================================================
+   FIREBASE — LEITURA E ESCRITA
+================================================================ */
+
+// Carrega TODOS os dados do Firebase para db{}
+async function carregarDadosFirebase(){
+  try {
+    const UID_FIXO = "HAbxSDyPUDg2Bc9CRbRLQMTo0UM2";
+    window._uid = UID_FIXO;
+
+    const dbPadrao = {
+      contas:[],clientes:[],fornecedores:[],vendedores:[],
+      despesas:[],gruposDespesas:[],subgruposDespesas:[],
+      receitas:[],gruposReceitas:[],subgruposReceitas:[],
+      empresa:{nome:"",doc:"",end:"",cidade:"",estado:"",tel:"",email:""}
+    };
+
+    const dbRef = window._dbRef(window._db);
+    const caminho = `users/${UID_FIXO}`;
+    console.log("🔎 Lendo Firebase em:", caminho);
+
+    const snapshot = await window._dbGet(window._dbChild(dbRef, caminho));
+
+    // Começa sempre pelo padrão e preenche SOMENTE com o que existe no Firebase.
+    // Não usa localStorage e não salva nada durante o carregamento.
+    db = JSON.parse(JSON.stringify(dbPadrao));
+
+    if(snapshot.exists()){
+      const data = snapshot.val() || {};
+
+      Object.keys(dbPadrao).forEach(key => {
+        if(key === 'empresa'){
+          db[key] = data[key] || dbPadrao[key];
+        }else{
+          db[key] = Array.isArray(data[key])
+            ? data[key]
+            : Object.values(data[key] || {});
+        }
+      });
+
+      normalizarDadosLegados(); // só ajusta em memória; NÃO grava no Firebase ao abrir
+
+      console.log("✅ Dados carregados do Firebase:", {
+        contas: db.contas.length,
+        clientes: db.clientes.length,
+        fornecedores: db.fornecedores.length,
+        vendedores: db.vendedores.length,
+        despesas: db.despesas.length,
+        receitas: db.receitas.length
+      });
+
+      mostrarToast(`✓ Firebase carregado: ${db.receitas.length} receitas, ${db.clientes.length} clientes`);
+    } else {
+      console.warn("⚠️ Nenhum dado encontrado no Firebase neste caminho:", caminho);
+      mostrarToast("⚠️ Firebase vazio neste caminho");
+    }
+  } catch(err){
+    console.error("Erro ao carregar dados do Firebase:", err);
+    alert("Erro ao carregar dados do Firebase. Verifique as regras do Firebase e o login.");
+  }
+}
+
+// Migra dados do localStorage para o Firebase (roda apenas uma vez)
+async function migrarLocalStorageParaFirebase(){
+  // DESATIVADO POR SEGURANÇA.
+  // Nunca migrar localStorage automaticamente para não sobrescrever dados do Firebase.
+  console.warn("Migração automática do localStorage desativada por segurança.");
+}
+
+// Fallback: carrega do localStorage se Firebase não responder
+
+
+// Normaliza dados antigos salvos antes do ajuste de parcelas/comissões.
+// Não apaga nada: só completa campos que não existiam no modelo antigo.
+function normalizarDadosLegados(){
+  if(!Array.isArray(db.receitas)) db.receitas = [];
+  db.receitas = db.receitas.map((r, idx) => {
+    const id = r.id || gerarIdReceita('REC');
+    const vendaId = r.vendaId || r.idVenda || id;
+    return {
+      ...r,
+      id,
+      vendaId,
+      tipoVenda: r.tipoVenda || r.tipo || 'avista',
+      dataVenda: r.dataVenda || r.data || r.vencimento || '',
+      qtdParcelas: parseInt(r.qtdParcelas || r.totalParcelas || 1),
+      parcelaAtual: parseInt(r.parcelaAtual || r.parcela || 1)
+    };
+  });
+}
+
+function carregarDoLocalStorage(){
+  const chaves = ['contas','clientes','fornecedores','vendedores','despesas',
+                  'gruposDespesas','subgruposDespesas','receitas','gruposReceitas',
+                  'subgruposReceitas','empresa'];
+  chaves.forEach(k => {
+    const local = localStorage.getItem(k);
+    if(local){ try{ db[k]=JSON.parse(local); }catch(e){} }
+  });
+}
+
+// Salva UMA chave no Firebase
+async function persist(chave){
+  if(!window._uid) return;
+  try {
+    const r = window._dbRef(window._db, `users/${window._uid}/${chave}`);
+    await window._dbSet(r, db[chave]);
+    mostrarToast("✓ Salvo no Firebase");
+  } catch(err){
+    console.error("Erro ao salvar no Firebase:", err);
+    mostrarToast("❌ Erro ao salvar no Firebase");
+    alert("Não foi possível salvar no Firebase. Nada foi salvo localmente para não misturar dados antigos.");
+  }
+}
+
+// Salva TODO o db no Firebase (usado na migração)
+async function salvarBackupRestauradoFirebase(){
+  // Usado somente quando o usuário confirma restauração de backup manual.
+  if(!window._uid) return;
+  const r = window._dbRef(window._db, `users/${window._uid}`);
+  await window._dbSet(r, db);
+}
+
+async function salvarTudoFirebase(){
+  // DESATIVADO POR SEGURANÇA.
+  // Esta função não deve ser chamada automaticamente.
+  console.warn("salvarTudoFirebase() bloqueado por segurança. Use persist(chave) ou restauração manual.");
+}
+
+/* ================================================================
+   UI HELPERS
+================================================================ */
+function mostrarCarregando(msg="Carregando..."){
+  document.getElementById('loading-msg').textContent = msg;
+  document.getElementById('login-loading').style.display = 'flex';
+}
+function esconderCarregando(){
+  document.getElementById('login-loading').style.display = 'none';
+}
+function mostrarToast(msg="Salvo!"){
+  const t = document.getElementById('save-toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  clearTimeout(window._toastTimer);
+  window._toastTimer = setTimeout(()=>{ t.style.display='none'; }, 2500);
+}
+
+// Expõe funções para o script type=module do Firebase.
+window.carregarDadosFirebase = carregarDadosFirebase;
+window.mostrarCarregando = mostrarCarregando;
+window.esconderCarregando = esconderCarregando;
+window.mostrarToast = mostrarToast;
+
+/* ================================================================
+   LOGIN / LOGOUT
+================================================================ */
+async function realizarLogin(){
+  const email = document.getElementById('login-email').value.trim();
+  const pass  = document.getElementById('login-pass').value;
+  const errorMsg = document.getElementById('login-error');
+  const btn = document.getElementById('btn-entrar');
+  if(!email||!pass){ errorMsg.textContent='Preencha e-mail e senha.'; errorMsg.style.display='block'; return; }
+  btn.disabled=true; btn.textContent='Entrando...'; errorMsg.style.display='none';
+  try {
+    await window._signInFn(window._auth, email, pass);
+  } catch(err){
+    btn.disabled=false; btn.textContent='Entrar no Sistema';
+    const msgs = {
+      'auth/invalid-credential':'E-mail ou senha incorretos.',
+      'auth/user-not-found':'Usuário não encontrado.',
+      'auth/wrong-password':'Senha incorreta.',
+      'auth/too-many-requests':'Muitas tentativas. Tente mais tarde.',
+      'auth/invalid-email':'E-mail inválido.',
+    };
+    errorMsg.textContent = msgs[err.code]||'Erro ao entrar. Verifique as credenciais.';
+    errorMsg.style.display='block';
+  }
+}
+
+async function realizarLogout(){
+  try {
+    await window._signOutFn(window._auth);
+    document.getElementById('login-pass').value='';
+    document.getElementById('login-error').style.display='none';
+    document.getElementById('btn-entrar').disabled=false;
+    document.getElementById('btn-entrar').textContent='Entrar no Sistema';
+  } catch(err){ console.error(err); }
+}
+
+/* ================================================================
+   NAVEGAÇÃO
+================================================================ */
+function mudarAba(aba){
+  abaAtiva=aba;
+  document.getElementById('tab-dashboard').classList.toggle('active',aba==='dashboard');
+  document.getElementById('tab-gestao').classList.toggle('active',aba==='gestao');
+  document.getElementById('submenu-dashboard').style.display=(aba==='dashboard')?'flex':'none';
+  document.getElementById('submenu-gestao').style.display=(aba==='gestao')?'flex':'none';
+  if(aba==='dashboard') abrirDash(dashAtivo); else abrirTela(telaAtiva);
+}
+
+function abrirDash(d){
+  dashAtivo=d;
+  ['geral','comissoes','fluxo','dre'].forEach(n=>document.getElementById('btn-dash-'+n).classList.toggle('active',n===d));
+  renderDashboard();
+}
+
+function abrirTela(m){
+  telaAtiva=m;
+  ["contas","clientes","fornecedores","vendedores","despesas","receitas"].forEach(t=>{
+    const btn=document.getElementById("btn-"+t); if(btn) btn.classList.toggle("active",t===m);
+  });
+  if(m==="despesas") renderDespesas();
+  else if(m==="receitas") renderReceitas();
+  else renderSubmenu(m);
+}
+
+/* ================================================================
+   CONFIGURAÇÕES E BACKUP
+================================================================ */
+function abrirConfiguracoes(){
+  document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.submenu').forEach(s=>s.style.display='none');
+  renderConfig();
+}
+
+function renderConfig(){
+  conteudo.innerHTML=`
+  <h2>Configurações do Sistema</h2>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px;">
+    <div class="card">
+      <h3>Dados da Empresa</h3>
+      <p style="margin-bottom:20px; color:#94a3b8">Personalize com as informações do seu negócio.</p>
+      <label>Nome da Empresa / Proprietário</label>
+      <input type="text" id="emp-nome" value="${db.empresa.nome}">
+      <label>CNPJ / CPF</label>
+      <input type="text" id="emp-doc" value="${db.empresa.doc}">
+      <label>Endereço</label>
+      <input type="text" id="emp-end" value="${db.empresa.end}">
+      <div style="display:flex; gap:10px">
+        <div style="flex:2"><label>Cidade</label><input type="text" id="emp-cidade" value="${db.empresa.cidade}"></div>
+        <div style="flex:1"><label>Estado</label><input type="text" id="emp-estado" value="${db.empresa.estado}"></div>
+      </div>
+      <div style="display:flex; gap:10px">
+        <div style="flex:1"><label>Telefone</label><input type="text" id="emp-tel" value="${db.empresa.tel}"></div>
+        <div style="flex:1"><label>E-mail Empresa</label><input type="text" id="emp-email" value="${db.empresa.email}"></div>
+      </div>
+      <div style="margin-top:20px">
+        <button class="btn-primary" onclick="salvarDadosEmpresa()">💾 Salvar no Firebase</button>
+      </div>
+    </div>
+
+    <div style="display:flex; flex-direction:column; gap:20px">
+      <div class="card">
+        <h3>🔥 Armazenamento Firebase</h3>
+        <p style="color:#94a3b8; font-size:13px; margin-bottom:15px">
+          Todos os seus dados estão salvos com segurança no Firebase Realtime Database.
+        </p>
+        <div style="background:#0a1628; border:1px solid #1e3a5f; padding:14px; border-radius:10px; font-size:12px; color:#94a3b8; line-height:1.8">
+          📁 <b style="color:#3b82f6">users/${window._uid||'...'}/</b><br>
+          &nbsp;&nbsp;├── contas (${db.contas.length} registro${db.contas.length!==1?'s':''})<br>
+          &nbsp;&nbsp;├── clientes (${db.clientes.length} registro${db.clientes.length!==1?'s':''})<br>
+          &nbsp;&nbsp;├── fornecedores (${db.fornecedores.length} registro${db.fornecedores.length!==1?'s':''})<br>
+          &nbsp;&nbsp;├── vendedores (${db.vendedores.length} registro${db.vendedores.length!==1?'s':''})<br>
+          &nbsp;&nbsp;├── despesas (${db.despesas.length} registro${db.despesas.length!==1?'s':''})<br>
+          &nbsp;&nbsp;└── receitas (${db.receitas.length} registro${db.receitas.length!==1?'s':''})
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>🔐 Acesso ao Sistema</h3>
+        <p style="color:#94a3b8; font-size:13px; margin-bottom:10px">
+          Login gerenciado pelo Firebase Authentication.<br>
+          Somente usuários cadastrados por você no Firebase Console têm acesso.
+        </p>
+        <div style="background:#1e293b; padding:12px; border-radius:10px; font-size:12px; color:#94a3b8">
+          🔒 Para alterar sua senha, acesse: <b>Firebase Console → Authentication → Users</b>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Backup e Restauração</h3>
+        <p style="margin-bottom:15px; color:#94a3b8; font-size:12px">Exporte um arquivo JSON de todos os seus dados.</p>
+        <div style="display:flex; flex-direction:column; gap:10px">
+          <button class="btn-secondary" onclick="exportarBackup()">📥 Exportar Backup JSON</button>
+          <input type="file" id="importFile" style="display:none" onchange="importarBackup(this)">
+          <button class="btn-primary" onclick="document.getElementById('importFile').click()">📤 Restaurar Backup</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function salvarDadosEmpresa(){
+  db.empresa={
+    nome:document.getElementById('emp-nome').value,
+    doc:document.getElementById('emp-doc').value,
+    end:document.getElementById('emp-end').value,
+    cidade:document.getElementById('emp-cidade').value,
+    estado:document.getElementById('emp-estado').value,
+    tel:document.getElementById('emp-tel').value,
+    email:document.getElementById('emp-email').value
+  };
+  await persist('empresa');
+  openModal(`<h3>✅ Sucesso!</h3><p>Perfil da empresa salvo no Firebase.</p><div class="modal-actions"><button class="btn-primary" onclick="closeModal()">OK</button></div>`);
+}
+
+function exportarBackup(){
+  const dataStr="data:text/json;charset=utf-8,"+encodeURIComponent(JSON.stringify(db));
+  const a=document.createElement('a');
+  a.setAttribute("href",dataStr);
+  a.setAttribute("download","backup_erp_"+new Date().toISOString().slice(0,10)+".json");
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+async function importarBackup(input){
+  const file=input.files[0]; if(!file) return;
+  const reader=new FileReader();
+  reader.onload=async function(e){
+    try{
+      const importedDb=JSON.parse(e.target.result);
+      if(confirm("Isso irá substituir TODOS os dados no Firebase. Deseja continuar?")){
+        mostrarCarregando("Restaurando dados...");
+        Object.keys(importedDb).forEach(key=>{ db[key]=importedDb[key]; });
+        await salvarBackupRestauradoFirebase();
+        esconderCarregando();
+        mostrarToast("✅ Dados restaurados no Firebase!");
+        alert("Dados restaurados com sucesso!");
+        location.reload();
+      }
+    }catch(err){ alert("Erro ao ler o arquivo de backup."); }
+  };
+  reader.readAsText(file);
+}
+
+/* ================================================================
+   SINCRONIZACAO DE SALDO (Funcao Universal)
+================================================================ */
+async function ajustarSaldoPorTransacao(tipo, novaTransacao, transacaoAnterior=null){
+  const contaNome = novaTransacao.conta;
+  const contaIndex = db.contas.findIndex(c => c.nome === contaNome);
+  if(contaIndex === -1) return;
+  const saldoAtual = parseFloat(db.contas[contaIndex].saldo) || 0;
+  const valorNovo = parseFloat(novaTransacao.valor) || 0;
+  let novoSaldo = saldoAtual;
+  if(!transacaoAnterior && (novaTransacao.situacao === 'Pago' || novaTransacao.situacao === 'Recebido')){
+    if(tipo === 'despesa') novoSaldo = saldoAtual - valorNovo;
+    else novoSaldo = saldoAtual + valorNovo;
+  }
+  else if(transacaoAnterior){
+    const statusAnterior = transacaoAnterior.situacao;
+    const statusNovo = novaTransacao.situacao;
+    const valorAnterior = parseFloat(transacaoAnterior.valor) || 0;
+    const contaAnterior = transacaoAnterior.conta;
+    if(contaAnterior !== contaNome){
+      const contaAntigaIndex = db.contas.findIndex(c => c.nome === contaAnterior);
+      if(contaAntigaIndex !== -1){
+        if(statusAnterior === 'Pago' || statusAnterior === 'Recebido'){
+          if(tipo === 'despesa') db.contas[contaAntigaIndex].saldo = (parseFloat(db.contas[contaAntigaIndex].saldo) || 0) + valorAnterior;
+          else db.contas[contaAntigaIndex].saldo = (parseFloat(db.contas[contaAntigaIndex].saldo) || 0) - valorAnterior;
+        }
+      }
+    }
+    if((statusAnterior === 'A pagar' || statusAnterior === 'Pendente' || statusAnterior === 'A receber') && (statusNovo === 'Pago' || statusNovo === 'Recebido')){
+      if(tipo === 'despesa') novoSaldo = saldoAtual - valorNovo;
+      else novoSaldo = saldoAtual + valorNovo;
+    }
+    else if((statusAnterior === 'Pago' || statusAnterior === 'Recebido') && (statusNovo === 'A pagar' || statusNovo === 'Pendente' || statusNovo === 'A receber')){
+      if(tipo === 'despesa') novoSaldo = saldoAtual + valorAnterior;
+      else novoSaldo = saldoAtual - valorAnterior;
+    }
+    else if((statusAnterior === 'Pago' || statusAnterior === 'Recebido') && (statusNovo === 'Pago' || statusNovo === 'Recebido') && valorAnterior !== valorNovo){
+      const diferenca = valorNovo - valorAnterior;
+      if(tipo === 'despesa') novoSaldo = saldoAtual - diferenca;
+      else novoSaldo = saldoAtual + diferenca;
+    }
+  }
+  db.contas[contaIndex].saldo = novoSaldo;
+}
+
+/* ================================================================
+   GATILHO GLOBAL DE ATUALIZACAO DO DASHBOARD
+================================================================ */
+async function atualizarDashboardGlobal(){
+  // Força a atualização de todas as abas do Dashboard sem redirecionar
+  if(abaAtiva === 'dashboard'){
+    processarDadosDashboard();
+  }
+}
+
+/* ================================================================
+   DASHBOARD
+================================================================ */
+function atualizarSaudacaoGlobal(){
+  const agora=new Date(); const hora=agora.getHours();
+  let saudacao="Bom dia";
+  if(hora>=12&&hora<18) saudacao="Boa tarde";
+  else if(hora>=18||hora<5) saudacao="Boa noite";
+  const dataFormatada=agora.toLocaleDateString('pt-BR',{weekday:'long',day:'2-digit',month:'long'});
+  const greetingEl=document.getElementById('global-greeting');
+  if(greetingEl){
+    const nome=db.empresa.nome||"Administrador";
+    greetingEl.innerHTML=`
+      <div class="greeting-text">
+        <h2>${saudacao}, ${nome}</h2>
+        <p>${dataFormatada}</p>
+      </div>
+      <div class="status-realtime">
+        <div class="status-dot"></div>
+        <span id="weather-info" class="status-label">Carregando clima...</span>
+        <button class="refresh-btn" onclick="atualizarSaudacaoGlobal(); if(abaAtiva==='dashboard') renderDashboard();">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        </button>
+      </div>`;
+  }
+  const apiKey="442af6ebd3b9094ed8e9764c28aad770";
+  const cidade=(db.empresa.cidade||"Sao Paulo").trim().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  fetch(`https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(cidade)}&appid=${apiKey}&units=metric&lang=pt_br`)
+    .then(r=>r.json()).then(data=>{
+      const el=document.getElementById('weather-info');
+      if(el&&data.main) el.innerText=`${data.name}: ${data.weather[0].description.charAt(0).toUpperCase()+data.weather[0].description.slice(1)}, ${Math.round(data.main.temp)}°C`;
+    }).catch(()=>{ const el=document.getElementById('weather-info'); if(el) el.innerText='Configure a cidade em Configurações'; });
+}
+
+function renderDashboard(){
+  let todosMeses=[...new Set([
+    ...db.receitas.map(r=>r.vencimento?.slice(0,7)),
+    ...db.despesas.map(d=>d.vencimento?.slice(0,7))
+  ])].filter(m=>m).sort().reverse();
+  atualizarSaudacaoGlobal();
+  conteudo.innerHTML=`
+  <div class="dash-header">
+    <div><h2 style="margin-bottom:0">Dashboard ${dashAtivo.toUpperCase()}</h2></div>
+    <div class="dash-filters">
+      <div style="width:180px">
+        <select id="selectPeriodo" onchange="atualizarFiltroPeriodo(this.value)">
+          <option value="mes_atual"   ${filtroPeriodo==='mes_atual'?'selected':''}>Mês Atual</option>
+          <option value="mes_anterior"${filtroPeriodo==='mes_anterior'?'selected':''}>Mês Anterior</option>
+          <option value="trimestre"   ${filtroPeriodo==='trimestre'?'selected':''}>Último Trimestre</option>
+          <option value="semestre"    ${filtroPeriodo==='semestre'?'selected':''}>Último Semestre</option>
+          <option value="ano"         ${filtroPeriodo==='ano'?'selected':''}>Este Ano</option>
+          <option value="custom"      ${filtroPeriodo==='custom'?'selected':''}>Personalizado</option>
+          <option value="comparacao"  ${filtroPeriodo==='comparacao'?'selected':''}>Comparação Livre</option>
+          <option value="todos"       ${filtroPeriodo==='todos'?'selected':''}>Tudo</option>
+        </select>
+      </div>
+      <div id="custom-dates" style="display:${filtroPeriodo==='custom'?'flex':'none'}; gap:10px; align-items:center">
+        <input type="date" id="dash-inicio" value="${dataInicioCustom}" onchange="atualizarDatasCustom()">
+        <span style="font-size:12px; color:#94a3b8">até</span>
+        <input type="date" id="dash-fim" value="${dataFimCustom}" onchange="atualizarDatasCustom()">
+      </div>
+      <div id="comparacao-box" style="display:${filtroPeriodo==='comparacao'?'block':'none'}; position:relative">
+        <button class="btn-secondary" onclick="toggleMultiSelect()">Selecionar Meses (${mesesSelecionados.length})</button>
+        <div id="multi-select-list" class="multi-select-box">
+          ${todosMeses.map(m=>`<div class="multi-select-item" onclick="event.stopPropagation()"><input type="checkbox" value="${m}" ${mesesSelecionados.includes(m)?'checked':''} onchange="atualizarMesesSelecionados(this)"><span style="margin-left:8px">${m.split('-').reverse().join('/')}</span></div>`).join('')}
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="dash-content"></div>`;
+  processarDadosDashboard();
+}
+
+function toggleMultiSelect(){ const el=document.getElementById('multi-select-list'); el.style.display=el.style.display==='block'?'none':'block'; }
+function atualizarMesesSelecionados(cb){ if(cb.checked) mesesSelecionados.push(cb.value); else mesesSelecionados=mesesSelecionados.filter(m=>m!==cb.value); processarDadosDashboard(); }
+function atualizarFiltroPeriodo(val){ filtroPeriodo=val; renderDashboard(); }
+function atualizarDatasCustom(){ dataInicioCustom=document.getElementById('dash-inicio').value; dataFimCustom=document.getElementById('dash-fim').value; if(dataInicioCustom&&dataFimCustom) processarDadosDashboard(); }
+
+function obterDataComissaoReceita(r){
+  // Comissão: venda à vista entra no mês da venda; venda a prazo entra pelo vencimento da parcela.
+  const tipo=(r.tipoVenda||r.tipo||'avista').toString().toLowerCase();
+  if(tipo==='avista' || tipo==='à vista' || tipo==='a vista') return r.dataVenda || r.vencimento;
+  return r.vencimento || r.dataVenda;
+}
+
+function processarDadosDashboard(){
+  const hoje=new Date(); let dataInicio,dataFim=new Date(hoje.getFullYear(),hoje.getMonth(),hoje.getDate(),23,59,59);
+  const mc=(filtroPeriodo==='comparacao');
+  if(filtroPeriodo==='mes_atual'){dataInicio=new Date(hoje.getFullYear(),hoje.getMonth(),1);dataFim=new Date(hoje.getFullYear(),hoje.getMonth()+1,0,23,59,59);}
+  else if(filtroPeriodo==='mes_anterior'){dataInicio=new Date(hoje.getFullYear(),hoje.getMonth()-1,1);dataFim=new Date(hoje.getFullYear(),hoje.getMonth(),0,23,59,59);}
+  else if(filtroPeriodo==='trimestre'){dataInicio=new Date(hoje.getFullYear(),hoje.getMonth()-2,1);}
+  else if(filtroPeriodo==='semestre'){dataInicio=new Date(hoje.getFullYear(),hoje.getMonth()-5,1);}
+  else if(filtroPeriodo==='ano'){dataInicio=new Date(hoje.getFullYear(),0,1);dataFim=new Date(hoje.getFullYear(),11,31,23,59,59);}
+  else if(filtroPeriodo==='custom'){dataInicio=dataInicioCustom?new Date(dataInicioCustom+"T00:00:00"):new Date(2000,0,1);dataFim=dataFimCustom?new Date(dataFimCustom+"T23:59:59"):new Date(2100,0,1);}
+  else{dataInicio=new Date(2000,0,1);dataFim=new Date(2100,0,1);}
+  const filtrar=(ds)=>{ if(!ds) return false; if(mc) return mesesSelecionados.includes(ds.slice(0,7)); const d=new Date(ds+"T00:00:00"); return d>=dataInicio&&d<=dataFim; };
+  let recs=db.receitas.filter(r=>filtrar(dashAtivo==='comissoes'?obterDataComissaoReceita(r):r.vencimento));
+  let dess=db.despesas.filter(d=>filtrar(d.vencimento));
+  if(dashAtivo==='geral') renderDashGeral(recs,dess);
+  else if(dashAtivo==='comissoes') renderDashComissoes(recs);
+  else if(dashAtivo==='fluxo') renderDashFluxo();
+  else renderDashDRE(recs,dess);
+}
+
+function gerarAnaliseIA(recs,dess){
+  let insights=[];
+  let tr=recs.reduce((a,r)=>a+(parseFloat(r.valor)||0),0);
+  let td=dess.reduce((a,d)=>a+(parseFloat(d.valor)||0),0);
+  let lucro=tr-td;
+  if(tr>0){ let m=(lucro/tr)*100; if(m>20) insights.push("Excelente! Margem de lucro saudável."); else if(m>5) insights.push("Margem positiva. Otimize custos e preços."); else if(m>=0) insights.push("Atenção: margem muito apertada."); else insights.push("Alerta: operando com prejuízo!"); }
+  else if(td>0){ insights.push("Sem receitas. Foque em gerar vendas."); }
+  else{ insights.push("Nenhum dado no período. Comece a registrar!"); }
+  if(td>0&&tr>0&&(td/tr)>0.5) insights.push("Despesas >50% das receitas. Reduza custos.");
+  let rank={}; recs.forEach(r=>{ rank[r.cliente]=(rank[r.cliente]||0)+(parseFloat(r.valor)||0); });
+  let sorted=Object.entries(rank).sort((a,b)=>b[1]-a[1]);
+  if(sorted.length>0) insights.push(`Destaque: ${sorted[0][0]} – R$ ${sorted[0][1].toLocaleString('pt-BR')}.`);
+  if(lucro>0) insights.push("Bom lucro! Considere reinvestir ou reserva de emergência.");
+  else if(lucro<0) insights.push("Receba mais rápido e negocie prazos com fornecedores.");
+  return insights.map(i=>`<p style="margin-bottom:8px; font-size:14px; color:#e2e8f0">${i}</p>`).join('');
+}
+
+function renderDashGeral(recs,dess){
+  let tr=recs.reduce((a,r)=>a+(parseFloat(r.valor)||0),0);
+  let td=dess.reduce((a,d)=>a+(parseFloat(d.valor)||0),0);
+  let lucro=tr-td;
+  let sc=db.contas.reduce((a,c)=>a+(parseFloat(c.saldo)||0),0);
+  let rent=tr>0?Math.max(0,Math.min(100,Math.round((lucro/tr)*100))):0;
+  let saude=(tr===0&&td===0)?0:(tr>td?85:45);
+  let custos=tr>0?Math.min(100,Math.round((td/tr)*100)):0;
+  let cresc=tr>0?Math.min(100,Math.max(-100,Math.round((lucro/tr)*50))):(td>0?-50:0);
+  let ranking={}; recs.forEach(r=>{ ranking[r.cliente]=(ranking[r.cliente]||0)+(parseFloat(r.valor)||0); });
+  let sortedR=Object.entries(ranking).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  document.getElementById('dash-content').innerHTML=`
+  <div class="dash-grid">
+    <div class="dash-card card-receita"><h4><span style="color:#22c55e">●</span> Receita</h4><div class="value">R$ ${tr.toLocaleString('pt-BR')}</div></div>
+    <div class="dash-card card-despesa"><h4><span style="color:#ef4444">●</span> Despesas</h4><div class="value">R$ ${td.toLocaleString('pt-BR')}</div></div>
+    <div class="dash-card ${lucro>=0?'card-lucro':'card-prejuizo'}"><h4><span style="color:${lucro>=0?'#3b82f6':'#ef4444'}">●</span> ${lucro>=0?'Lucro':'Prejuízo'}</h4><div class="value">R$ ${lucro.toLocaleString('pt-BR')}</div></div>
+    <div class="dash-card card-caixa"><h4><span style="color:#a855f7">●</span> Caixa Total</h4><div class="value">R$ ${sc.toLocaleString('pt-BR')}</div></div>
+    <div class="dash-card card-ia"><h4><span style="color:#f59e0b">●</span> IA Análise</h4><div class="ia-insights" style="font-size:12px">${gerarAnaliseIA(recs,dess)}</div></div>
+  </div>
+  <div class="main-grid">
+    <div class="card"><h3>Evolução Financeira</h3><canvas id="chartLucro" style="max-height:300px"></canvas></div>
+    <div class="card">
+      <h3>Executive Score</h3>
+      <div style="display:flex; justify-content:center; margin-bottom:20px"><canvas id="chartScore" style="max-width:150px; max-height:150px"></canvas></div>
+      <div class="score-item"><div class="score-label"><span>Rentabilidade</span><span>${rent}%</span></div><div class="progress-bg"><div class="progress-fill" style="width:${rent}%; background:#22c55e"></div></div></div>
+      <div class="score-item"><div class="score-label"><span>Saúde</span><span>${saude}%</span></div><div class="progress-bg"><div class="progress-fill" style="width:${saude}%; background:#3b82f6"></div></div></div>
+      <div class="score-item"><div class="score-label"><span>Custos</span><span>${custos}%</span></div><div class="progress-bg"><div class="progress-fill" style="width:${custos}%; background:#ef4444"></div></div></div>
+      <div class="score-item"><div class="score-label"><span>Crescimento</span><span>${cresc}%</span></div><div class="progress-bg"><div class="progress-fill" style="width:${Math.abs(cresc)}%; background:${cresc>=0?'#22c55e':'#ef4444'}"></div></div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>🏆 Ranking de Clientes</h3>
+    <table style="margin-top:0">
+      ${sortedR.map((item,i)=>`<tr><td style="width:40px; font-weight:bold; color:#f59e0b">${i+1}º</td><td>${item[0]}</td><td style="text-align:right; font-weight:bold">R$ ${item[1].toLocaleString('pt-BR')}</td><td style="width:200px"><div class="progress-bg"><div class="progress-fill" style="width:${tr>0?(item[1]/tr*100).toFixed(0):0}%; background:#22c55e"></div></div></td></tr>`).join('')}
+      ${sortedR.length===0?'<tr><td colspan="4" style="color:#94a3b8">Nenhum dado disponível</td></tr>':''}
+    </table>
+  </div>`;
+  initCharts(recs,dess,rent);
+}
+
+function renderDashComissoes(recs){
+  let tv=recs.filter(r=>r.vendedor).reduce((a,r)=>a+(parseFloat(r.valor)||0),0);
+  let va=[...new Set(recs.filter(r=>r.vendedor).map(r=>r.vendedor))];
+  let tc=0, rv={};
+  
+  // Primeiro, agrupa as vendas por vendedor
+  recs.filter(r=>r.vendedor).forEach(r=>{
+    if(!rv[r.vendedor]) rv[r.vendedor] = {vendido:0, comissao:0, meta:0, bonus:0, atingiuMeta:false};
+    rv[r.vendedor].vendido += (parseFloat(r.valor)||0);
+  });
+
+  // Depois, calcula a comissão baseada na meta
+  Object.keys(rv).forEach(nome => {
+    let v = db.vendedores.find(vend => vend.nome === nome);
+    if(v) {
+      rv[nome].meta = parseFloat(v.meta)||0;
+      rv[nome].bonus = parseFloat(v.comissaoBonus)||0;
+      rv[nome].comissaoBase = parseFloat(v.comissao)||0;
+      rv[nome].atingiuMeta = (rv[nome].meta > 0 && rv[nome].vendido >= rv[nome].meta);
+      
+      let p = rv[nome].atingiuMeta ? rv[nome].bonus : rv[nome].comissaoBase;
+      rv[nome].comissao = rv[nome].vendido * (p/100);
+      rv[nome].percAplicado = p;
+      tc += rv[nome].comissao;
+    }
+  });
+  
+  // Determinar o período exibido
+  let periodoTexto = 'Todos os períodos';
+  if(filtroPeriodo === 'mes_atual') periodoTexto = 'Mês atual';
+  else if(filtroPeriodo === 'mes_anterior') periodoTexto = 'Mês anterior';
+  else if(filtroPeriodo === 'trimestre') periodoTexto = 'Últimos 3 meses';
+  else if(filtroPeriodo === 'semestre') periodoTexto = 'Últimos 6 meses';
+  else if(filtroPeriodo === 'ano') periodoTexto = 'Este ano';
+  else if(filtroPeriodo === 'custom') periodoTexto = `De ${dataInicioCustom} a ${dataFimCustom}`;
+
+  let mc=va.length>0?tc/va.length:0;
+  let sv=Object.entries(rv).sort((a,b)=>b[1].vendido-a[1].vendido);
+  
+  document.getElementById('dash-content').innerHTML=`
+  <div class="dash-grid">
+    <div class="dash-card card-vendido"><h4>💰 Total Vendido</h4><div class="value">R$ ${tv.toLocaleString('pt-BR')}</div><span style="font-size:12px; color:#94a3b8">Período: ${periodoTexto}</span></div>
+    <div class="dash-card card-vendedores"><h4>👥 Vendedores</h4><div class="value">${va.length}</div></div>
+    <div class="dash-card card-total-comissao"><h4>💸 Total Comissão</h4><div class="value">R$ ${tc.toLocaleString('pt-BR')}</div></div>
+    <div class="dash-card card-media-comissao"><h4>📊 Média Comissão</h4><div class="value">R$ ${mc.toLocaleString('pt-BR')}</div></div>
+  </div>
+  <div class="card">
+    <h3>🏆 Ranking e Metas de Vendedores (${periodoTexto})</h3>
+    <table style="margin-top:0">
+      <tr>
+        <th>Posição</th>
+        <th>Vendedor</th>
+        <th>Total Vendido</th>
+        <th>Meta (R$)</th>
+        <th>Comissão (%)</th>
+        <th>Valor Comissão</th>
+        <th>Progresso Meta</th>
+      </tr>
+      ${sv.map((item,i)=>{
+        let info = item[1];
+        let percMeta = info.meta > 0 ? Math.min(100, (info.vendido / info.meta * 100)) : 100;
+        let corProgresso = info.atingiuMeta ? '#22c55e' : '#f59e0b';
+        let statusMeta = info.meta > 0 ? (info.atingiuMeta ? 'META ATINGIDA!' : `Faltam R$ ${(info.meta - info.vendido).toLocaleString('pt-BR')}`) : 'Sem meta';
+        return `<tr>
+          <td style="font-weight:bold; color:#f59e0b">${i+1}º</td>
+          <td>${item[0]} ${info.atingiuMeta ? '🏆' : ''}</td>
+          <td style="font-weight:bold">R$ ${info.vendido.toLocaleString('pt-BR')}</td>
+          <td style="color:#94a3b8">R$ ${info.meta.toLocaleString('pt-BR')}</td>
+          <td style="color:${info.atingiuMeta?'#22c55e':'#94a3b8'}">${info.percAplicado}% ${info.atingiuMeta?'(Bônus)':''}</td>
+          <td style="color:#22c55e; font-weight:bold">R$ ${info.comissao.toLocaleString('pt-BR')}</td>
+          <td style="width:200px">
+            <div class="progress-bg">
+              <div class="progress-fill" style="width:${percMeta}%; background:${corProgresso}"></div>
+            </div>
+            <span style="font-size:10px; color:#94a3b8">${percMeta.toFixed(1)}% - ${statusMeta}</span>
+          </td>
+        </tr>`;
+      }).join('')}
+      ${sv.length===0?'<tr><td colspan="7" style="color:#94a3b8; text-align:center; padding:20px"><strong>Nenhuma venda com vendedor no período selecionado.</strong> Verifique se as datas das receitas estão dentro do período de filtro.</td></tr>':''}
+    </table>
+  </div>`;
+}
+
+function renderDashDRE(recs,dess){
+  let rg={}; recs.forEach(r=>{ rg[r.grupo]=(rg[r.grupo]||0)+(parseFloat(r.valor)||0); });
+  let trb=Object.values(rg).reduce((a,b)=>a+b,0);
+  let dg={}; dess.forEach(d=>{ dg[d.grupo]=(dg[d.grupo]||0)+(parseFloat(d.valor)||0); });
+  let td=Object.values(dg).reduce((a,b)=>a+b,0);
+  let ll=trb-td;
+  document.getElementById('dash-content').innerHTML=`
+  <div class="card">
+    <h3>Demonstrativo do Resultado do Exercício (DRE)</h3>
+    <table style="margin-top:20px">
+      <tr style="background:#1e293b"><th colspan="2">DESCRIÇÃO</th><th style="text-align:right">VALOR</th></tr>
+      <tr style="font-weight:bold; color:#22c55e"><td>(+) RECEITA OPERACIONAL BRUTA</td><td></td><td style="text-align:right">R$ ${trb.toLocaleString('pt-BR')}</td></tr>
+      ${Object.entries(rg).map(([g,v])=>`<tr style="font-size:12px; color:#94a3b8"><td>&nbsp;&nbsp;&nbsp;&nbsp;${g}</td><td></td><td style="text-align:right">R$ ${v.toLocaleString('pt-BR')}</td></tr>`).join('')}
+      <tr style="font-weight:bold"><td>(=) RECEITA LÍQUIDA</td><td></td><td style="text-align:right">R$ ${trb.toLocaleString('pt-BR')}</td></tr>
+      <tr style="font-weight:bold; color:#ef4444"><td>(-) DESPESAS OPERACIONAIS</td><td></td><td style="text-align:right">R$ ${td.toLocaleString('pt-BR')}</td></tr>
+      ${Object.entries(dg).map(([g,v])=>`<tr style="font-size:12px; color:#94a3b8"><td>&nbsp;&nbsp;&nbsp;&nbsp;${g}</td><td></td><td style="text-align:right">R$ ${v.toLocaleString('pt-BR')}</td></tr>`).join('')}
+      <tr style="height:20px"><td></td><td></td><td></td></tr>
+      <tr style="background:#1e293b; font-weight:bold; font-size:16px; color:${ll>=0?'#22c55e':'#ef4444'}">
+        <td>(=) RESULTADO LÍQUIDO</td><td></td><td style="text-align:right">R$ ${ll.toLocaleString('pt-BR')}</td>
+      </tr>
+    </table>
+  </div>`;
+}
+
+function renderDashFluxo(){
+  const hoje=new Date(); hoje.setHours(0,0,0,0);
+  let sa=db.contas.reduce((a,c)=>a+(parseFloat(c.saldo)||0),0);
+  const gp=(dias)=>{ let dl=new Date(); dl.setDate(hoje.getDate()+dias); dl.setHours(23,59,59,999); let e=db.receitas.filter(r=>{ let d=new Date(r.vencimento+"T00:00:00"); return d>=hoje&&d<=dl; }).reduce((a,r)=>a+(parseFloat(r.valor)||0),0); let s=db.despesas.filter(d=>{ let dt=new Date(d.vencimento+"T00:00:00"); return dt>=hoje&&dt<=dl; }).reduce((a,d)=>a+(parseFloat(d.valor)||0),0); return{e,s,saldo:sa+e-s}; };
+  let p7=gp(7),p15=gp(15),p30=gp(30),p60=gp(60),sd=gp(0);
+  const cpm=(lista)=>{ let t=0,c=0; lista.forEach(i=>{ if(i.situacao!=="Pago"&&i.situacao!=="Recebido"){ let v=new Date(i.vencimento+"T00:00:00"); let d=Math.ceil((v-hoje)/(864e5)); if(d>=0){t+=d;c++;} } }); return c>0?Math.round(t/c):0; };
+  document.getElementById('dash-content').innerHTML=`
+  <div class="dash-grid">
+    <div class="dash-card card-saldo-atual"><h4>💳 Saldo Atual</h4><div class="value">R$ ${sa.toLocaleString('pt-BR')}</div></div>
+    <div class="dash-card card-saldo-dia"><h4>📅 Saldo do Dia</h4><div class="value">R$ ${sd.saldo.toLocaleString('pt-BR')}</div></div>
+    <div class="dash-card card-projecao-30"><h4>📊 Projeção 30 dias</h4><div class="value">R$ ${p30.saldo.toLocaleString('pt-BR')}</div></div>
+    <div class="dash-card card-prazo-pagto"><h4>⌛ Prazo Médio Pagamento</h4><div class="value">${cpm(db.despesas)} dias</div></div>
+    <div class="dash-card card-prazo-receb"><h4>⌛ Prazo Médio Recebimento</h4><div class="value">${cpm(db.receitas)} dias</div></div>
+  </div>
+  <div class="card">
+    <h3>📈 Projeção de Caixa</h3>
+    <div class="dash-grid" style="margin-top:20px">
+      ${[{d:'7 dias',p:p7},{d:'15 dias',p:p15},{d:'30 dias',p:p30},{d:'60 dias',p:p60}].map(({d,p})=>`
+      <div class="dash-card"><h4 style="color:#94a3b8">${d}</h4><div class="value">R$ ${p.saldo.toLocaleString('pt-BR')}</div>
+      <div style="font-size:12px; margin-top:10px"><span style="color:#22c55e">+ R$ ${p.e.toLocaleString('pt-BR')}</span><br><span style="color:#ef4444">- R$ ${p.s.toLocaleString('pt-BR')}</span></div></div>`).join('')}
+    </div>
+  </div>`;
+}
+
+function initCharts(recs,dess,rent){
+  let meses={}; const gma=(s)=>s.slice(0,7);
+  recs.forEach(r=>{ let ma=gma(r.vencimento); if(!meses[ma]) meses[ma]={r:0,d:0}; meses[ma].r+=parseFloat(r.valor)||0; });
+  dess.forEach(d=>{ let ma=gma(d.vencimento); if(!meses[ma]) meses[ma]={r:0,d:0}; meses[ma].d+=parseFloat(d.valor)||0; });
+  let labels=Object.keys(meses).sort();
+  new Chart(document.getElementById('chartLucro').getContext('2d'),{type:'line',data:{labels:labels.map(l=>l.split('-').reverse().join('/')),datasets:[{label:'Receita',data:labels.map(l=>meses[l].r),borderColor:'#22c55e',tension:.4,fill:false},{label:'Despesa',data:labels.map(l=>meses[l].d),borderColor:'#ef4444',tension:.4,fill:false}]},options:{responsive:true,plugins:{legend:{labels:{color:'#94a3b8'}}},scales:{y:{grid:{color:'#1e293b'},ticks:{color:'#94a3b8'}},x:{grid:{display:false},ticks:{color:'#94a3b8'}}}}});
+  new Chart(document.getElementById('chartScore').getContext('2d'),{type:'doughnut',data:{datasets:[{data:[rent||.1,100-(rent||.1)],backgroundColor:[rent>0?'#3b82f6':'#1e293b','#1e293b'],borderWidth:0}]},options:{cutout:'80%',plugins:{tooltip:{enabled:false}}}});
+}
+
+/* ================================================================
+   GESTÃO (CRUD)
+================================================================ */
+function openModal(html){ modal.style.display="flex"; document.getElementById("modal-body").innerHTML=html; }
+function closeModal(){ modal.style.display="none"; }
+function label(m){ return{contas:"Conta",clientes:"Cliente",fornecedores:"Fornecedor",vendedores:"Vendedor"}[m]; }
+function plural(m){ return{contas:"Contas",clientes:"Clientes",fornecedores:"Fornecedores",vendedores:"Vendedores"}[m]; }
+function prefixoLista(m){ return m==="contas"?"Minhas":"Meus"; }
+
+function renderSubmenu(m){ conteudo.innerHTML=`<h2>${plural(m)}</h2><button class="btn-primary" onclick="renderForm('${m}')">+ ${label(m)}</button><button class="btn-secondary" onclick="renderLista('${m}')">${prefixoLista(m)} ${plural(m)}</button>`; }
+
+function renderLista(m){
+  let html=`<h2>${prefixoLista(m)} ${plural(m)}</h2><button class="btn-secondary" onclick="renderSubmenu('${m}')">Voltar</button><button class="btn-primary" onclick="renderForm('${m}')">+ ${label(m)}</button><hr>`;
+  db[m].forEach((i,idx)=>{
+    let det="";
+    if(m==="contas") det=`<div class="detail" style="display:block">${i.banco} | ${i.tipo} | Saldo: R$ ${i.saldo}</div>`;
+    else if(m==="vendedores") det=`<div id="det-${m}-${idx}" class="detail">Comissão: ${i.comissao}%<br>CPF/CNPJ: ${i.doc}<br>${i.cidade} - ${i.estado}</div>`;
+    else det=`<div id="det-${m}-${idx}" class="detail">CPF/CNPJ: ${i.doc}<br>Endereço: ${i.end}<br>${i.cidade} - ${i.estado}</div>`;
+    html+=`<div class="card"><div class="row"><div onclick="${m==='contas'?'':'toggleDetalhe(\''+m+'\','+idx+')'}" style="cursor:pointer;font-weight:bold">${i.nome}</div><div><button class="btn-primary" onclick="renderForm('${m}',${idx})">Editar</button><button class="btn-danger" onclick="removeItem('${m}',${idx})">Excluir</button></div></div>${det}</div>`;
+  });
+  conteudo.innerHTML=html;
+}
+
+function toggleDetalhe(m,i){ const el=document.getElementById(`det-${m}-${i}`); el.style.display=el.style.display==="block"?"none":"block"; }
+
+function renderForm(m,index=null){
+  if(m==="contas") return renderFormConta(index);
+  if(m==="vendedores") return renderFormVendedor(index);
+  let i=index!==null?db[m][index]:{nome:"",doc:"",end:"",cidade:"",estado:""};
+  openModal(`<h3>${index===null?"Cadastrar":"Editar"} ${label(m)}</h3><label>Nome / Razão Social</label><input id="nome" value="${i.nome}"><label>CPF / CNPJ</label><input id="doc" value="${i.doc}"><label>Endereço</label><input id="end" value="${i.end}"><label>Cidade</label><input id="cidade" value="${i.cidade}"><label>Estado</label><input id="estado" value="${i.estado}"><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveCadastro('${m}',${index})">Salvar</button></div>`);
+}
+
+function renderFormVendedor(index=null){
+  let i=index!==null?db.vendedores[index]:{nome:"",doc:"",end:"",cidade:"",estado:"",comissao:"",meta:0,comissaoBonus:0};
+  openModal(`<h3>${index===null?"Cadastrar":"Editar"} Vendedor</h3>
+    <label>Nome</label><input id="nome" value="${i.nome}">
+    <label>CPF / CNPJ</label><input id="doc" value="${i.doc}">
+    <label>Endereço</label><input id="end" value="${i.end}">
+    <div style="display:flex; gap:10px">
+      <div style="flex:2"><label>Cidade</label><input id="cidade" value="${i.cidade}"></div>
+      <div style="flex:1"><label>Estado</label><input id="estado" value="${i.estado}"></div>
+    </div>
+    <hr>
+    <div style="display:flex; gap:10px">
+      <div style="flex:1"><label>% Comissão Base</label><input id="comissao" type="number" value="${i.comissao}"></div>
+      <div style="flex:1"><label>Meta de Vendas (R$)</label><input id="meta" type="number" value="${i.meta||0}"></div>
+      <div style="flex:1"><label>% Comissão Bônus</label><input id="comissaoBonus" type="number" value="${i.comissaoBonus||0}"></div>
+    </div>
+    <p style="font-size:11px; color:#94a3b8; margin-top:5px">Dica: Se o vendedor vender mais que a meta, a comissão bônus será aplicada.</p>
+    <div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveVendedor(${index})">Salvar</button></div>`);
+}
+
+function renderFormConta(index=null){
+  let i=index!==null?db.contas[index]:{nome:"",banco:"",tipo:"Corrente",saldo:""};
+  openModal(`<h3>${index===null?"Cadastrar":"Editar"} Conta</h3><label>Nome</label><input id="nome" value="${i.nome}"><label>Banco</label><input id="banco" value="${i.banco}"><label>Tipo</label><select id="tipo"><option>Corrente</option><option>Caixa</option><option>Carteira</option><option>Investimento</option></select><label>Saldo Inicial</label><input id="saldo" value="${i.saldo}"><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveConta(${index})">Salvar</button></div>`);
+}
+
+async function saveCadastro(m,index){ let obj={nome:nome.value,doc:doc.value,end:end.value,cidade:cidade.value,estado:estado.value}; if(index===null||index==="null") db[m].push(obj); else db[m][index]=obj; await persist(m); closeModal(); renderLista(m); }
+async function saveVendedor(index){ 
+  let obj={
+    nome:nome.value,
+    doc:doc.value,
+    end:end.value,
+    cidade:cidade.value,
+    estado:estado.value,
+    comissao:parseFloat(comissao.value)||0,
+    meta:parseFloat(meta.value)||0,
+    comissaoBonus:parseFloat(comissaoBonus.value)||0
+  }; 
+  if(index===null||index==="null") db.vendedores.push(obj); else db.vendedores[index]=obj; 
+  await persist("vendedores"); 
+  closeModal(); 
+  renderLista("vendedores"); 
+}
+async function saveConta(index){ let obj={nome:nome.value,banco:banco.value,tipo:tipo.value,saldo:parseFloat(saldo.value)||0}; if(index===null||index==="null") db.contas.push(obj); else db.contas[index]=obj; await persist("contas"); closeModal(); renderLista("contas"); }
+async function removeItem(m,i){ db[m].splice(i,1); await persist(m); renderLista(m); }
+
+/* ================================================================
+   DESPESAS
+================================================================ */
+function renderDespesas(){ conteudo.innerHTML=`<h2>Despesas</h2><button class="btn-primary" onclick="renderFormDespesa()">+ Despesa</button><button class="btn-secondary" onclick="renderListaDespesas()">Minhas Despesas</button><br><br><button class="btn-primary" onclick="renderGrupoSubgrupo()">+ Grupos/Subgrupos</button><button class="btn-secondary" onclick="renderListaGrupoDespesa()">Grupos</button>`; }
+
+function renderFormDespesa(index=null){
+  let d=index!==null?db.despesas[index]:{fornecedor:"",conta:"",grupo:"",subgrupo:"",vencimento:"",valor:"",situacao:"A pagar",dataPagamento:""};
+  let pessoas=[...db.fornecedores,...db.vendedores];
+  openModal(`<h3>${index===null?"Cadastrar":"Editar"} Despesa</h3><label>Fornecedor / Vendedor</label><select id="fornecedor">${pessoas.map(p=>`<option ${p.nome===d.fornecedor?"selected":""}>${p.nome}</option>`).join("")}</select><label>Conta</label><select id="conta">${db.contas.map(c=>`<option ${c.nome===d.conta?"selected":""}>${c.nome}</option>`).join("")}</select><label>Grupo</label><select id="grupo" onchange="carregarSubgrupos()">${db.gruposDespesas.map(g=>`<option ${g===d.grupo?"selected":""}>${g}</option>`).join("")}</select><label>Subgrupo</label><select id="subgrupo"></select><label>Vencimento</label><input type="date" id="vencimento" value="${d.vencimento}"><label>Valor</label><input id="valor" value="${d.valor}"><label>Situação</label><select id="situacao" onchange="togglePagamento()"><option ${d.situacao==="A pagar"?"selected":""}>A pagar</option><option ${d.situacao==="Pago"?"selected":""}>Pago</option></select><div id="boxPagamento" style="display:none"><label>Data pagamento</label><input type="date" id="dataPagamento" value="${d.dataPagamento||""}"></div><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveDespesa(${index})">Salvar</button></div>`);
+  setTimeout(()=>{ carregarSubgrupos(d.subgrupo); togglePagamento(); },100);
+}
+
+function carregarSubgrupos(sel=""){ subgrupo.innerHTML=db.subgruposDespesas.filter(s=>s.grupo===grupo.value).map(s=>`<option ${s.nome===sel?"selected":""}>${s.nome}</option>`).join(""); }
+function togglePagamento(){ boxPagamento.style.display=situacao.value==="Pago"?"block":"none"; }
+async function saveDespesa(index){ 
+  let novaObj={fornecedor:fornecedor.value,conta:conta.value,grupo:grupo.value,subgrupo:subgrupo.value,vencimento:vencimento.value,valor:parseFloat(valor.value)||0,situacao:situacao.value,dataPagamento:situacao.value==="Pago"?dataPagamento.value:""};
+  let transacaoAnterior=index!==null&&index!=="null"?db.despesas[index]:null;
+  await ajustarSaldoPorTransacao('despesa',novaObj,transacaoAnterior);
+  if(index===null||index==="null") db.despesas.push(novaObj); else db.despesas[index]=novaObj; 
+  await persist("despesas"); 
+  await persist("contas");
+  closeModal(); 
+  renderListaDespesas();
+  atualizarDashboardGlobal();
+  mostrarToast("✓ Despesa salva com sucesso!");
+}
+
+function renderListaDespesas(){
+  let meses=[...new Set(db.despesas.map(d=>d.vencimento?.slice(5,7)+"/"+d.vencimento?.slice(2,4)))];
+  conteudo.innerHTML=`<h2>Minhas Despesas</h2><button class="btn-secondary" onclick="renderDespesas()">Voltar</button><button class="btn-primary" onclick="renderFormDespesa()">+ Despesa</button><hr><div style="display:flex;gap:14px;flex-wrap:wrap"><div style="flex:1"><label>Mês</label><select id="fMes" onchange="filtrarDespesas()"><option>Todas</option>${meses.map(m=>`<option>${m}</option>`).join("")}</select></div><div style="flex:1"><label>Conta</label><select id="fConta" onchange="filtrarDespesas()"><option>Todas</option>${db.contas.map(c=>`<option>${c.nome}</option>`).join("")}</select></div><div style="flex:1"><label>Situação</label><select id="fSituacao" onchange="filtrarDespesas()"><option>Todas</option><option>A pagar</option><option>Pendente</option><option>Pago</option></select></div></div><div id="tabelaDespesas"></div>`;
+  filtrarDespesas();
+}
+
+function filtrarDespesas(){
+  const hoje=new Date(),mes=fMes?.value||"Todas",conta=fConta?.value||"Todas",sit=fSituacao?.value||"Todas";
+  let html=`<table><tr><th>Vencimento</th><th>Fornecedor</th><th>Conta</th><th>Grupo</th><th>Subgrupo</th><th>Valor</th><th>Situação</th><th>Ações</th></tr>`;
+  db.despesas.forEach((d,i)=>{ let s=d.situacao; if(s!=="Pago"&&new Date(d.vencimento)<hoje) s="Pendente"; let dm=d.vencimento.slice(5,7)+"/"+d.vencimento.slice(2,4); if((mes==="Todas"||dm===mes)&&(conta==="Todas"||d.conta===conta)&&(sit==="Todas"||s===sit)) html+=`<tr><td>${d.vencimento}</td><td>${d.fornecedor}</td><td>${d.conta}</td><td>${d.grupo}</td><td>${d.subgrupo}</td><td>R$ ${d.valor}</td><td>${s}</td><td><button class="btn-primary" onclick="renderFormDespesa(${i})">Editar</button><button class="btn-secondary" onclick="baixarDespesa(${i})">Baixa</button><button class="btn-danger" onclick="excluirDespesa(${i})">Excluir</button></td></tr>`; });
+  html+="</table>"; tabelaDespesas.innerHTML=html;
+}
+
+function baixarDespesa(i){ const d=db.despesas[i]; openModal(`<h3>Baixar Despesa</h3><table><tr><th>Vencimento</th><th>Data pagamento</th><th>Valor pago</th></tr><tr><td>${d.vencimento}</td><td><input type="date" id="dataPgto"></td><td><input id="valorPgto" value="${d.valor}"></td></tr></table><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Fechar</button><button class="btn-primary" onclick="confirmarBaixa(${i})">Baixar</button></div>`); }
+async function confirmarBaixa(i){ 
+  if(parseFloat(valorPgto.value)!==parseFloat(db.despesas[i].valor)){ alert("Valor deve ser igual ao da despesa"); return; } 
+  const despesa=db.despesas[i]; 
+  const contaNome=despesa.conta; 
+  const contaIndex=db.contas.findIndex(c=>c.nome===contaNome); 
+  if(contaIndex===-1){ alert("Conta não encontrada"); return; } 
+  const valorDespesa=parseFloat(despesa.valor)||0; 
+  const saldoAtual=parseFloat(db.contas[contaIndex].saldo)||0; 
+  db.contas[contaIndex].saldo=saldoAtual-valorDespesa; 
+  despesa.situacao="Pago"; 
+  despesa.dataPagamento=dataPgto.value; 
+  await persist("contas"); 
+  await persist("despesas"); 
+  mostrarToast("✓ Despesa baixada! Caixa atualizado para R$ "+db.contas[contaIndex].saldo.toLocaleString('pt-BR')); 
+  closeModal(); 
+  filtrarDespesas();
+  atualizarDashboardGlobal();
+}
+async function excluirDespesa(i){ 
+  const despesa=db.despesas[i];
+  if(despesa.situacao==="Pago"||despesa.situacao==="Recebido"){
+    const contaIndex=db.contas.findIndex(c=>c.nome===despesa.conta);
+    if(contaIndex!==-1){
+      const valor=parseFloat(despesa.valor)||0;
+      db.contas[contaIndex].saldo=(parseFloat(db.contas[contaIndex].saldo)||0)+valor;
+      await persist("contas");
+    }
+  }
+  db.despesas.splice(i,1); 
+  await persist("despesas"); 
+  filtrarDespesas();
+  atualizarDashboardGlobal();
+  mostrarToast("✓ Despesa excluída com sucesso!");
+}
+
+function renderGrupoSubgrupo(et=null,idx=null,si=null){
+  let title="Grupo / Subgrupo Despesas",gv="",sv="",gp=0;
+  if(et==='grupo'&&idx!==null){title="Editar Grupo";gv=db.gruposDespesas[idx];}
+  else if(et==='subgrupo'&&idx!==null&&si!==null){title="Editar Subgrupo";let s=db.subgruposDespesas.filter(s=>s.grupo===db.gruposDespesas[idx])[si];sv=s.nome;gp=idx;}
+  openModal(`<h3>${title}</h3><label>Grupo</label><input id="novoGrupo" value="${gv}"><button class="btn-primary" style="margin-top:10px" onclick="saveGrupo(${idx})">${et==='grupo'?'Salvar Alteração':'+ Grupo'}</button><hr><label>Grupo Pai</label><select id="grupoPai">${db.gruposDespesas.map((g,i)=>`<option value="${i}" ${i===gp?'selected':''}>${g}</option>`).join("")}</select><label>Subgrupo</label><input id="novoSubgrupo" value="${sv}"><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveSubgrupo(${idx},${si})">${et==='subgrupo'?'Salvar Alteração':'+ Subgrupo'}</button></div>`);
+}
+
+async function saveGrupo(idx=null){ if(idx!==null&&idx!==undefined){let a=db.gruposDespesas[idx];db.gruposDespesas[idx]=novoGrupo.value;db.subgruposDespesas.forEach(s=>{if(s.grupo===a)s.grupo=novoGrupo.value;});await persist("subgruposDespesas");}else{db.gruposDespesas.push(novoGrupo.value);} await persist("gruposDespesas"); if(abaAtiva==='gestao') renderListaGrupoDespesa(); else renderGrupoSubgrupo(); }
+async function saveSubgrupo(gi=null,si=null){ let gn=db.gruposDespesas[grupoPai.value]; if(si!==null&&si!==undefined){let s=db.subgruposDespesas.filter(s=>s.grupo===db.gruposDespesas[gi])[si];let ri=db.subgruposDespesas.indexOf(s);db.subgruposDespesas[ri].nome=novoSubgrupo.value;db.subgruposDespesas[ri].grupo=gn;}else{db.subgruposDespesas.push({grupo:gn,nome:novoSubgrupo.value});} await persist("subgruposDespesas"); closeModal(); if(abaAtiva==='gestao') renderListaGrupoDespesa(); }
+async function excluirGrupoDespesa(i){ if(!confirm("Excluir grupo e subgrupos?")) return; let n=db.gruposDespesas[i]; db.gruposDespesas.splice(i,1); db.subgruposDespesas=db.subgruposDespesas.filter(s=>s.grupo!==n); await persist("gruposDespesas"); await persist("subgruposDespesas"); renderListaGrupoDespesa(); }
+async function excluirSubgrupoDespesa(gi,si){ if(!confirm("Excluir subgrupo?")) return; let s=db.subgruposDespesas.filter(s=>s.grupo===db.gruposDespesas[gi])[si]; db.subgruposDespesas.splice(db.subgruposDespesas.indexOf(s),1); await persist("subgruposDespesas"); renderListaGrupoDespesa(); }
+
+function renderListaGrupoDespesa(){
+  let html=`<div class="row"><h2>Grupos Despesas</h2><button class="btn-primary" onclick="renderGrupoSubgrupo()">+ Novo</button></div><hr>`;
+  db.gruposDespesas.forEach((g,gi)=>{ html+=`<div class="card"><div class="row"><b>${g}</b><div><button class="btn-primary btn-small" onclick="renderGrupoSubgrupo('grupo',${gi})">Editar</button><button class="btn-danger btn-small" onclick="excluirGrupoDespesa(${gi})">Excluir</button></div></div><div style="margin-top:8px">`; db.subgruposDespesas.filter(s=>s.grupo===g).forEach((s,si)=>{ html+=`<div class="item-list"><span>└ ${s.nome}</span><div><button class="btn-secondary btn-small" onclick="renderGrupoSubgrupo('subgrupo',${gi},${si})">Editar</button><button class="btn-danger btn-small" onclick="excluirSubgrupoDespesa(${gi},${si})">Excluir</button></div></div>`; }); html+="</div></div>"; });
+  conteudo.innerHTML=html;
+}
+
+/* ================================================================
+   RECEITAS
+================================================================ */
+
+function encontrarIndiceReceita(identificador){
+  if(identificador===null || identificador===undefined || identificador==="null" || identificador==="") return null;
+  // Preferir ID único da parcela. Isso evita editar sempre a primeira parcela da venda.
+  let id=String(identificador);
+  let idx=db.receitas.findIndex(r=>String(r.id)===id);
+  if(idx>=0) return idx;
+  // Compatibilidade com versões antigas que passavam índice numérico.
+  if(!isNaN(Number(identificador)) && db.receitas[Number(identificador)]) return Number(identificador);
+  return null;
+}
+function escaparJSReceita(valor){
+  return String(valor||"").replace(/\\/g,"\\\\").replace(/'/g,"\\'").replace(/\n/g," ");
+}
+function renderReceitas(){ conteudo.innerHTML=`<h2>Receitas</h2><button class="btn-primary" onclick="renderFormReceita()">+ Receita</button><button class="btn-secondary" onclick="renderListaReceitas()">Minhas Receitas</button><br><br><button class="btn-primary" onclick="renderGrupoSubgrupoReceita()">+ Grupos/Subgrupos</button><button class="btn-secondary" onclick="renderListaGrupoReceita()">Grupos</button>`; }
+
+function renderFormReceita(identificador=null){
+  const index=encontrarIndiceReceita(identificador);
+  let r=index!==null?db.receitas[index]:{cliente:"",vendedor:"",conta:"",grupo:"",subgrupo:"",dataVenda:"",tipoVenda:"avista",vencimento:"",valor:"",situacao:"A receber",dataRecebimento:"",qtdParcelas:1,parcelaAtual:1};
+  const dataVendaPadrao = r.dataVenda || r.vencimento || "";
+  const tipoPadrao = r.tipoVenda || "avista";
+  const qtdPadrao = r.qtdParcelas || 1;
+  openModal(`<h3>${index===null?"Cadastrar":"Editar"} Receita ${index!==null && (r.tipoVenda||'avista')==='prazo' ? '- Parcela '+(r.parcelaAtual||1)+'/'+(r.qtdParcelas||1) : ''}</h3>
+  <label>Cliente</label><select id="cliente">${db.clientes.map(c=>`<option ${c.nome===r.cliente?"selected":""}>${c.nome}</option>`).join("")}</select>
+  <label>Vendedor</label><select id="vendedor">${db.vendedores.map(v=>`<option ${v.nome===r.vendedor?"selected":""}>${v.nome}</option>`).join("")}</select>
+  <label>Conta</label><select id="conta">${db.contas.map(c=>`<option ${c.nome===r.conta?"selected":""}>${c.nome}</option>`).join("")}</select>
+  <label>Grupo</label><select id="grupo" onchange="carregarSubgruposReceita()">${db.gruposReceitas.map(g=>`<option ${g===r.grupo?"selected":""}>${g}</option>`).join("")}</select>
+  <label>Subgrupo</label><select id="subgrupo"></select>
+  <label>Data da venda</label><input type="date" id="dataVenda" value="${dataVendaPadrao}">
+  <label>Tipo da venda</label>
+  <select id="tipoVenda" onchange="toggleParcelasReceita()">
+    <option value="avista" ${tipoPadrao==='avista'?"selected":""}>Venda à vista</option>
+    <option value="prazo" ${tipoPadrao==='prazo'?"selected":""}>Venda a prazo / parcelada</option>
+  </select>
+  <div id="boxParcelasReceita" style="display:none">
+    <label>Quantidade de parcelas</label><input type="number" id="qtdParcelas" value="${qtdPadrao}" min="1">
+    <p style="font-size:12px;color:#94a3b8;margin-top:6px">Ao cadastrar venda parcelada nova, o sistema cria uma receita para cada parcela. Na edição, altera somente a parcela aberta.</p>
+  </div>
+  <label id="labelVencimentoReceita">Vencimento</label><input type="date" id="vencimento" value="${r.vencimento}">
+  <label>Valor ${index===null?'total':'da parcela'}</label><input id="valor" value="${r.valor}">
+  <label>Situação</label><select id="situacao" onchange="toggleRecebimento()"><option ${r.situacao==="A receber"?"selected":""}>A receber</option><option ${r.situacao==="Recebido"?"selected":""}>Recebido</option></select>
+  <div id="boxRecebimento" style="display:none"><label>Data recebimento</label><input type="date" id="dataRecebimento" value="${r.dataRecebimento||""}"></div>
+  <div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveReceita('${index!==null?escaparJSReceita(r.id):''}')">Salvar</button></div>`);
+  setTimeout(()=>{ carregarSubgruposReceita(r.subgrupo); toggleRecebimento(); toggleParcelasReceita(); },100);
+}
+
+function carregarSubgruposReceita(sel=""){ subgrupo.innerHTML=db.subgruposReceitas.filter(s=>s.grupo===grupo.value).map(s=>`<option ${s.nome===sel?"selected":""}>${s.nome}</option>`).join(""); }
+function toggleRecebimento(){ boxRecebimento.style.display=situacao.value==="Recebido"?"block":"none"; }
+function toggleParcelasReceita(){
+  const tipo=document.getElementById('tipoVenda')?.value||'avista';
+  const box=document.getElementById('boxParcelasReceita');
+  const label=document.getElementById('labelVencimentoReceita');
+  if(box) box.style.display=tipo==='prazo'?'block':'none';
+  if(label) label.textContent=tipo==='prazo'?'Vencimento da 1ª parcela':'Vencimento / recebimento';
+  const dv=document.getElementById('dataVenda');
+  const venc=document.getElementById('vencimento');
+  if(tipo==='avista' && dv && venc && !venc.value) venc.value=dv.value;
+}
+function addMesesDataISO(dataISO, meses){
+  if(!dataISO) return "";
+  const [ano,mes,dia]=dataISO.split('-').map(Number);
+  const d=new Date(ano, mes-1+meses, dia);
+  return d.toISOString().slice(0,10);
+}
+function gerarIdReceita(prefixo='REC'){
+  return prefixo + '_' + Date.now() + '_' + Math.random().toString(36).slice(2,8);
+}
+async function saveReceita(identificador=null){ 
+  const index=encontrarIndiceReceita(identificador);
+  const tipo=(document.getElementById('tipoVenda')?.value)||'avista';
+  const dataVendaValor=(document.getElementById('dataVenda')?.value) || vencimento.value;
+  const qtd=Math.max(1, parseInt((document.getElementById('qtdParcelas')?.value) || 1));
+  const valorTotal=parseFloat(valor.value)||0;
+  let transacaoAnterior=index!==null&&index!=="null"?db.receitas[index]:null;
+
+  // Em edição, altera somente a receita/parcela aberta.
+  // Mantém id/vendaId para a parcela continuar ligada à venda original.
+  if(index!==null && index!=="null"){
+    let novaObj={
+      ...transacaoAnterior,
+      id: transacaoAnterior?.id || gerarIdReceita('REC'),
+      vendaId: transacaoAnterior?.vendaId || gerarIdReceita('VENDA'),
+      cliente:cliente.value,vendedor:vendedor.value,conta:conta.value,grupo:grupo.value,subgrupo:subgrupo.value,
+      dataVenda:dataVendaValor,tipoVenda:tipo,vencimento:vencimento.value,valor:valorTotal,
+      situacao:situacao.value,dataRecebimento:situacao.value==="Recebido"?dataRecebimento.value:"",
+      qtdParcelas:transacaoAnterior?.qtdParcelas || qtd,parcelaAtual:transacaoAnterior?.parcelaAtual||1,
+      atualizadoEm:new Date().toISOString()
+    };
+    await ajustarSaldoPorTransacao('receita',novaObj,transacaoAnterior);
+    db.receitas[index]=novaObj;
+  } else {
+    const parcelas = tipo==='prazo' ? qtd : 1;
+    const valorParcela = parcelas>1 ? Math.round((valorTotal/parcelas)*100)/100 : valorTotal;
+    const vendaId=gerarIdReceita('VENDA');
+    for(let n=1; n<=parcelas; n++){
+      let valorDaParcela = (n===parcelas) ? Math.round((valorTotal - valorParcela*(parcelas-1))*100)/100 : valorParcela;
+      let novaObj={
+        id:gerarIdReceita('REC'),vendaId:vendaId,
+        cliente:cliente.value,vendedor:vendedor.value,conta:conta.value,grupo:grupo.value,subgrupo:subgrupo.value,
+        dataVenda:dataVendaValor,tipoVenda:tipo,vencimento:tipo==='prazo'?addMesesDataISO(vencimento.value,n-1):vencimento.value,
+        valor:valorDaParcela,situacao:situacao.value,dataRecebimento:situacao.value==="Recebido"?dataRecebimento.value:"",
+        qtdParcelas:parcelas,parcelaAtual:n,criadoEm:new Date().toISOString(),atualizadoEm:new Date().toISOString()
+      };
+      await ajustarSaldoPorTransacao('receita',novaObj,null);
+      db.receitas.push(novaObj);
+    }
+  }
+  await persist("receitas"); 
+  await persist("contas");
+  closeModal(); 
+  renderListaReceitas();
+  atualizarDashboardGlobal();
+  mostrarToast("✓ Receita salva com sucesso!");
+}
+
+function renderListaReceitas(){
+  let meses=[...new Set(db.receitas.map(r=>r.vencimento? r.vencimento.slice(5,7)+"/"+r.vencimento.slice(2,4) : "").filter(Boolean))];
+  conteudo.innerHTML=`<h2>Minhas Receitas</h2><button class="btn-secondary" onclick="renderReceitas()">Voltar</button><button class="btn-primary" onclick="renderFormReceita()">+ Receita</button><hr><div style="display:flex;gap:14px;flex-wrap:wrap"><div style="flex:1"><label>Mês</label><select id="fMes" onchange="filtrarReceitas()"><option>Todas</option>${meses.map(m=>`<option>${m}</option>`).join("")}</select></div><div style="flex:1"><label>Conta</label><select id="fConta" onchange="filtrarReceitas()"><option>Todas</option>${db.contas.map(c=>`<option>${c.nome}</option>`).join("")}</select></div><div style="flex:1"><label>Situação</label><select id="fSituacao" onchange="filtrarReceitas()"><option>Todas</option><option>A receber</option><option>Pendente</option><option>Recebido</option></select></div></div><div id="tabelaReceitas"></div>`;
+  filtrarReceitas();
+}
+
+function filtrarReceitas(){
+  const hoje=new Date(),mes=fMes?.value||"Todas",conta=fConta?.value||"Todas",sit=fSituacao?.value||"Todas";
+  let html=`<table><tr><th>Data venda</th><th>Vencimento</th><th>Tipo</th><th>Parcela</th><th>Cliente</th><th>Vendedor</th><th>Conta</th><th>Grupo</th><th>Subgrupo</th><th>Valor</th><th>Situação</th><th>Ações</th></tr>`;
+  db.receitas.forEach((r,i)=>{
+    let s=r.situacao;
+    if(s!=="Recebido"&&r.vencimento&&new Date(r.vencimento+"T00:00:00")<hoje) s="Pendente";
+    let rm=r.vencimento?r.vencimento.slice(5,7)+"/"+r.vencimento.slice(2,4):"";
+    if((mes==="Todas"||rm===mes)&&(conta==="Todas"||r.conta===conta)&&(sit==="Todas"||s===sit)){
+      const tipoLabel=(r.tipoVenda||'avista')==='prazo'?'A prazo':'À vista';
+      const parcelaLabel=(r.tipoVenda||'avista')==='prazo'?`${r.parcelaAtual||1}/${r.qtdParcelas||1}`:'-';
+      html+=`<tr><td>${r.dataVenda||r.vencimento||''}</td><td>${r.vencimento||''}</td><td>${tipoLabel}</td><td>${parcelaLabel}</td><td>${r.cliente||''}</td><td>${r.vendedor||"-"}</td><td>${r.conta||''}</td><td>${r.grupo||''}</td><td>${r.subgrupo||''}</td><td>R$ ${(parseFloat(r.valor)||0).toLocaleString('pt-BR')}</td><td>${s}</td><td><button class="btn-primary" onclick="renderFormReceita('${escaparJSReceita(r.id)}')">Editar</button><button class="btn-secondary" onclick="baixarReceita(${i})">Baixa</button><button class="btn-danger" onclick="excluirReceita(${i})">Excluir</button></td></tr>`;
+    }
+  });
+  html+="</table>"; tabelaReceitas.innerHTML=html;
+}
+
+function baixarReceita(i){ const r=db.receitas[i]; openModal(`<h3>Baixar Receita</h3><table><tr><th>Vencimento</th><th>Data recebimento</th><th>Valor</th></tr><tr><td>${r.vencimento}</td><td><input type="date" id="dataReceb"></td><td><input id="valorReceb" value="${r.valor}"></td></tr></table><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Fechar</button><button class="btn-primary" onclick="confirmarBaixaReceita(${i})">Baixar</button></div>`); }
+async function confirmarBaixaReceita(i){ 
+  if(parseFloat(valorReceb.value)!==parseFloat(db.receitas[i].valor)){ alert("Valor deve ser igual ao da receita"); return; } 
+  const receitaAnterior={...db.receitas[i]};
+  const novaReceita={...db.receitas[i],situacao:"Recebido",dataRecebimento:dataReceb.value,atualizadoEm:new Date().toISOString()};
+  await ajustarSaldoPorTransacao('receita',novaReceita,receitaAnterior);
+  db.receitas[i]=novaReceita;
+  await persist("contas"); 
+  await persist("receitas"); 
+  mostrarToast("✓ Receita baixada! Caixa e comissão atualizados"); 
+  closeModal(); 
+  filtrarReceitas();
+  atualizarDashboardGlobal();
+}
+async function excluirReceita(i){ 
+  const receita=db.receitas[i];
+  if(receita.situacao==="Pago"||receita.situacao==="Recebido"){
+    const contaIndex=db.contas.findIndex(c=>c.nome===receita.conta);
+    if(contaIndex!==-1){
+      const valor=parseFloat(receita.valor)||0;
+      db.contas[contaIndex].saldo=(parseFloat(db.contas[contaIndex].saldo)||0)-valor;
+      await persist("contas");
+    }
+  }
+  db.receitas.splice(i,1); 
+  await persist("receitas"); 
+  filtrarReceitas();
+  atualizarDashboardGlobal();
+  mostrarToast("✓ Receita excluída com sucesso!");
+}
+
+function renderGrupoSubgrupoReceita(et=null,idx=null,si=null){
+  let title="Grupo / Subgrupo Receitas",gv="",sv="",gp=0;
+  if(et==='grupo'&&idx!==null){title="Editar Grupo";gv=db.gruposReceitas[idx];}
+  else if(et==='subgrupo'&&idx!==null&&si!==null){title="Editar Subgrupo";let s=db.subgruposReceitas.filter(s=>s.grupo===db.gruposReceitas[idx])[si];sv=s.nome;gp=idx;}
+  openModal(`<h3>${title}</h3><label>Grupo</label><input id="novoGrupoReceita" value="${gv}"><button class="btn-primary" style="margin-top:10px" onclick="saveGrupoReceita(${idx})">${et==='grupo'?'Salvar':'+ Grupo'}</button><hr><label>Grupo Pai</label><select id="grupoPaiReceita">${db.gruposReceitas.map((g,i)=>`<option value="${i}" ${i===gp?'selected':''}>${g}</option>`).join("")}</select><label>Subgrupo</label><input id="novoSubgrupoReceita" value="${sv}"><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveSubgrupoReceita(${idx},${si})">${et==='subgrupo'?'Salvar':'+ Subgrupo'}</button></div>`);
+}
+
+async function saveGrupoReceita(idx=null){ if(idx!==null&&idx!==undefined){let a=db.gruposReceitas[idx];db.gruposReceitas[idx]=novoGrupoReceita.value;db.subgruposReceitas.forEach(s=>{if(s.grupo===a)s.grupo=novoGrupoReceita.value;});await persist("subgruposReceitas");}else{db.gruposReceitas.push(novoGrupoReceita.value);} await persist("gruposReceitas"); if(abaAtiva==='gestao') renderListaGrupoReceita(); else renderGrupoSubgrupoReceita(); }
+async function saveSubgrupoReceita(gi=null,si=null){ let gn=db.gruposReceitas[grupoPaiReceita.value]; if(si!==null&&si!==undefined){let s=db.subgruposReceitas.filter(s=>s.grupo===db.gruposReceitas[gi])[si];let ri=db.subgruposReceitas.indexOf(s);db.subgruposReceitas[ri].nome=novoSubgrupoReceita.value;db.subgruposReceitas[ri].grupo=gn;}else{db.subgruposReceitas.push({grupo:gn,nome:novoSubgrupoReceita.value});} await persist("subgruposReceitas"); closeModal(); if(abaAtiva==='gestao') renderListaGrupoReceita(); }
+async function excluirGrupoReceita(i){ if(!confirm("Excluir grupo e subgrupos?")) return; let n=db.gruposReceitas[i]; db.gruposReceitas.splice(i,1); db.subgruposReceitas=db.subgruposReceitas.filter(s=>s.grupo!==n); await persist("gruposReceitas"); await persist("subgruposReceitas"); renderListaGrupoReceita(); }
+async function excluirSubgrupoReceita(gi,si){ if(!confirm("Excluir subgrupo?")) return; let s=db.subgruposReceitas.filter(s=>s.grupo===db.gruposReceitas[gi])[si]; db.subgruposReceitas.splice(db.subgruposReceitas.indexOf(s),1); await persist("subgruposReceitas"); renderListaGrupoReceita(); }
+
+function renderListaGrupoReceita(){
+  let html=`<div class="row"><h2>Grupos Receitas</h2><button class="btn-primary" onclick="renderGrupoSubgrupoReceita()">+ Novo</button></div><hr>`;
+  db.gruposReceitas.forEach((g,gi)=>{ html+=`<div class="card"><div class="row"><b>${g}</b><div><button class="btn-primary btn-small" onclick="renderGrupoSubgrupoReceita('grupo',${gi})">Editar</button><button class="btn-danger btn-small" onclick="excluirGrupoReceita(${gi})">Excluir</button></div></div><div style="margin-top:8px">`; db.subgruposReceitas.filter(s=>s.grupo===g).forEach((s,si)=>{ html+=`<div class="item-list"><span>└ ${s.nome}</span><div><button class="btn-secondary btn-small" onclick="renderGrupoSubgrupoReceita('subgrupo',${gi},${si})">Editar</button><button class="btn-danger btn-small" onclick="excluirSubgrupoReceita(${gi},${si})">Excluir</button></div></div>`; }); html+="</div></div>"; });
+  conteudo.innerHTML=html;
+}
+</script>
+
+<script>
+// Segurança extra: se o Firebase ou algum script falhar, não deixa preso em "Verificando sessão".
+window.addEventListener('load', function(){
+  setTimeout(function(){
+    var loading = document.getElementById('login-loading');
+    var login = document.getElementById('login-screen');
+    var app = document.getElementById('main-app');
+    if(loading && loading.style.display !== 'none' && (!app || app.style.display !== 'block')){
+      loading.style.display = 'none';
+      if(login) login.style.display = 'flex';
+    }
+  }, 3000);
+});
+</script>
+</body>
+</html>
