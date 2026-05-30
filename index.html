@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ERP Financeiro - Sistema Integrado</title>
+<!-- VERSAO: moeda-br-real-2026-05-30 -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <!-- ============================================================
@@ -106,7 +107,7 @@ body{ background:#020617; color:#e2e8f0; overflow-x:hidden; }
 /* LOADING / OVERLAY */
 #login-loading{
   position:fixed; top:0; left:0; width:100%; height:100%;
-  background:#020617; display:flex; flex-direction:column;
+  background:#020617; display:none; flex-direction:column;
   justify-content:center; align-items:center; z-index:20000; gap:20px;
 }
 .spinner{ width:48px; height:48px; border:4px solid #1e293b; border-top-color:#3b82f6; border-radius:50%; animation:spin .8s linear infinite; }
@@ -125,7 +126,7 @@ body{ background:#020617; color:#e2e8f0; overflow-x:hidden; }
 /* LOGIN */
 #login-screen{
   position:fixed; top:0; left:0; width:100%; height:100%;
-  background:#020617; display:none; justify-content:center; align-items:center; z-index:10000;
+  background:#020617; display:flex; justify-content:center; align-items:center; z-index:10000;
 }
 .login-box{
   background:#0f172a; padding:40px; border-radius:24px; border:1px solid #1e293b;
@@ -381,6 +382,7 @@ let db = {
 };
 
 let abaAtiva='dashboard', telaAtiva='contas', dashAtivo='geral';
+console.log('✅ Versão moeda BR real carregada: vírgula nos centavos e ponto nos milhares');
 let filtroPeriodo='mes_atual', dataInicioCustom='', dataFimCustom='', mesesSelecionados=[];
 
 /* ================================================================
@@ -424,6 +426,7 @@ async function carregarDadosFirebase(){
       });
 
       normalizarDadosLegados(); // só ajusta em memória; NÃO grava no Firebase ao abrir
+      recalcularSaldosContas(); // recalcula caixa em memória sem salvar ao abrir
 
       console.log("✅ Dados carregados do Firebase:", {
         contas: db.contas.length,
@@ -472,6 +475,37 @@ function normalizarDadosLegados(){
       parcelaAtual: parseInt(r.parcelaAtual || r.parcela || 1)
     };
   });
+  if(!Array.isArray(db.despesas)) db.despesas = [];
+  if(!Array.isArray(db.contas)) db.contas = [];
+  db.contas = db.contas.map(c => ({
+    ...c,
+    saldoInicial: c.saldoInicial !== undefined ? numeroBR(c.saldoInicial) : numeroBR(c.saldo)
+  }));
+}
+
+function recalcularSaldosContas(){
+  if(!Array.isArray(db.contas)) return;
+
+  db.contas.forEach(c => {
+    if(c.saldoInicial === undefined || c.saldoInicial === null || c.saldoInicial === ''){
+      c.saldoInicial = numeroBR(c.saldo);
+    }
+    c.saldo = numeroBR(c.saldoInicial);
+  });
+
+  (db.receitas||[]).forEach(r => {
+    if(r.situacao === 'Recebido'){
+      const idx = db.contas.findIndex(c => c.nome === r.conta);
+      if(idx !== -1) db.contas[idx].saldo = numeroBR(db.contas[idx].saldo) + numeroBR(r.valor);
+    }
+  });
+
+  (db.despesas||[]).forEach(d => {
+    if(d.situacao === 'Pago'){
+      const idx = db.contas.findIndex(c => c.nome === d.conta);
+      if(idx !== -1) db.contas[idx].saldo = numeroBR(db.contas[idx].saldo) - numeroBR(d.valor);
+    }
+  });
 }
 
 function carregarDoLocalStorage(){
@@ -510,6 +544,112 @@ async function salvarTudoFirebase(){
   // DESATIVADO POR SEGURANÇA.
   // Esta função não deve ser chamada automaticamente.
   console.warn("salvarTudoFirebase() bloqueado por segurança. Use persist(chave) ou restauração manual.");
+}
+
+
+/* ================================================================
+   MOEDA BRASILEIRA — FORMATAÇÃO E CONVERSÃO
+================================================================ */
+function numeroBR(valor){
+  if(valor === null || valor === undefined) return 0;
+  if(typeof valor === 'number') return isNaN(valor) ? 0 : valor;
+
+  let v = String(valor).trim();
+  if(!v) return 0;
+
+  v = v.replace(/R\$/g,'').replace(/\s/g,'').replace(/[^0-9,\.\-]/g,'');
+
+  const negativo = v.startsWith('-');
+  v = v.replace(/-/g,'');
+
+  const temVirgula = v.includes(',');
+  const temPonto = v.includes('.');
+
+  // Padrão brasileiro: 10,56 / 1.500,50
+  if(temVirgula){
+    const partes = v.split(',');
+    const centavos = partes.pop();
+    const inteiro = partes.join('').replace(/\./g,'') || '0';
+    const n = Number(inteiro + '.' + centavos);
+    return isNaN(n) ? 0 : (negativo ? -n : n);
+  }
+
+  // Sem vírgula:
+  // 10.56 = decimal digitado com ponto
+  // 1.000 = milhar brasileiro
+  if(temPonto){
+    const partes = v.split('.');
+    const ultima = partes[partes.length - 1];
+
+    if(partes.length === 2 && ultima.length > 0 && ultima.length <= 2){
+      const n = Number(v);
+      return isNaN(n) ? 0 : (negativo ? -n : n);
+    }
+
+    v = v.replace(/\./g,'');
+  }
+
+  const n = Number(v);
+  return isNaN(n) ? 0 : (negativo ? -n : n);
+}
+
+function moedaBR(valor){
+  const n = numeroBR(valor);
+  const negativo = n < 0;
+  const abs = Math.abs(n);
+  const fixo = abs.toFixed(2);
+  let [inteiro, centavos] = fixo.split('.');
+  inteiro = inteiro.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  return (negativo ? '- ' : '') + 'R$ ' + inteiro + ',' + centavos;
+}
+
+function normalizarDigitacaoMoedaBR(input){
+  let v = String(input.value || '')
+    .replace(/R\$/g,'')
+    .replace(/\s/g,'')
+    .replace(/[^0-9,\.]/g,'');
+
+  // Se digitou 10.56, transforma visualmente em 10,56.
+  // Se digitou 1.000, mantém como milhar até sair do campo.
+  if(v.includes('.') && !v.includes(',')){
+    const partes = v.split('.');
+    const ultima = partes[partes.length - 1];
+    if(partes.length === 2 && ultima.length > 0 && ultima.length <= 2){
+      v = partes[0] + ',' + ultima;
+    }
+  }
+
+  input.value = v;
+}
+
+function formatarCampoMoeda(input){
+  if(String(input.value || '').trim() === '') return;
+  input.value = moedaBR(input.value);
+}
+
+function prepararCamposMoeda(){
+  document.querySelectorAll('input[data-moeda="br"]').forEach(input=>{
+    input.type = 'text';
+    input.inputMode = 'decimal';
+    input.autocomplete = 'off';
+
+    if(input.value !== '') input.value = moedaBR(input.value);
+
+    input.onfocus = function(){
+      if(this.value !== ''){
+        this.value = this.value.replace(/R\$/g,'').trim();
+        this.select();
+      }
+    };
+
+    input.oninput = function(){
+      normalizarDigitacaoMoedaBR(this);
+    };
+
+    input.onblur = function(){
+      formatarCampoMoeda(this);
+    };
+  });
 }
 
 /* ================================================================
@@ -722,45 +862,9 @@ async function importarBackup(input){
    SINCRONIZACAO DE SALDO (Funcao Universal)
 ================================================================ */
 async function ajustarSaldoPorTransacao(tipo, novaTransacao, transacaoAnterior=null){
-  const contaNome = novaTransacao.conta;
-  const contaIndex = db.contas.findIndex(c => c.nome === contaNome);
-  if(contaIndex === -1) return;
-  const saldoAtual = parseFloat(db.contas[contaIndex].saldo) || 0;
-  const valorNovo = parseFloat(novaTransacao.valor) || 0;
-  let novoSaldo = saldoAtual;
-  if(!transacaoAnterior && (novaTransacao.situacao === 'Pago' || novaTransacao.situacao === 'Recebido')){
-    if(tipo === 'despesa') novoSaldo = saldoAtual - valorNovo;
-    else novoSaldo = saldoAtual + valorNovo;
-  }
-  else if(transacaoAnterior){
-    const statusAnterior = transacaoAnterior.situacao;
-    const statusNovo = novaTransacao.situacao;
-    const valorAnterior = parseFloat(transacaoAnterior.valor) || 0;
-    const contaAnterior = transacaoAnterior.conta;
-    if(contaAnterior !== contaNome){
-      const contaAntigaIndex = db.contas.findIndex(c => c.nome === contaAnterior);
-      if(contaAntigaIndex !== -1){
-        if(statusAnterior === 'Pago' || statusAnterior === 'Recebido'){
-          if(tipo === 'despesa') db.contas[contaAntigaIndex].saldo = (parseFloat(db.contas[contaAntigaIndex].saldo) || 0) + valorAnterior;
-          else db.contas[contaAntigaIndex].saldo = (parseFloat(db.contas[contaAntigaIndex].saldo) || 0) - valorAnterior;
-        }
-      }
-    }
-    if((statusAnterior === 'A pagar' || statusAnterior === 'Pendente' || statusAnterior === 'A receber') && (statusNovo === 'Pago' || statusNovo === 'Recebido')){
-      if(tipo === 'despesa') novoSaldo = saldoAtual - valorNovo;
-      else novoSaldo = saldoAtual + valorNovo;
-    }
-    else if((statusAnterior === 'Pago' || statusAnterior === 'Recebido') && (statusNovo === 'A pagar' || statusNovo === 'Pendente' || statusNovo === 'A receber')){
-      if(tipo === 'despesa') novoSaldo = saldoAtual + valorAnterior;
-      else novoSaldo = saldoAtual - valorAnterior;
-    }
-    else if((statusAnterior === 'Pago' || statusAnterior === 'Recebido') && (statusNovo === 'Pago' || statusNovo === 'Recebido') && valorAnterior !== valorNovo){
-      const diferenca = valorNovo - valorAnterior;
-      if(tipo === 'despesa') novoSaldo = saldoAtual - diferenca;
-      else novoSaldo = saldoAtual + diferenca;
-    }
-  }
-  db.contas[contaIndex].saldo = novoSaldo;
+  // O caixa não deve ficar preso nem duplicar movimento.
+  // A cada alteração, o saldo é recalculado a partir do saldo inicial + receitas recebidas - despesas pagas.
+  recalcularSaldosContas();
 }
 
 /* ================================================================
@@ -879,38 +983,38 @@ function processarDadosDashboard(){
 
 function gerarAnaliseIA(recs,dess){
   let insights=[];
-  let tr=recs.reduce((a,r)=>a+(parseFloat(r.valor)||0),0);
-  let td=dess.reduce((a,d)=>a+(parseFloat(d.valor)||0),0);
+  let tr=recs.reduce((a,r)=>a+(numeroBR(r.valor)),0);
+  let td=dess.reduce((a,d)=>a+(numeroBR(d.valor)),0);
   let lucro=tr-td;
   if(tr>0){ let m=(lucro/tr)*100; if(m>20) insights.push("Excelente! Margem de lucro saudável."); else if(m>5) insights.push("Margem positiva. Otimize custos e preços."); else if(m>=0) insights.push("Atenção: margem muito apertada."); else insights.push("Alerta: operando com prejuízo!"); }
   else if(td>0){ insights.push("Sem receitas. Foque em gerar vendas."); }
   else{ insights.push("Nenhum dado no período. Comece a registrar!"); }
   if(td>0&&tr>0&&(td/tr)>0.5) insights.push("Despesas >50% das receitas. Reduza custos.");
-  let rank={}; recs.forEach(r=>{ rank[r.cliente]=(rank[r.cliente]||0)+(parseFloat(r.valor)||0); });
+  let rank={}; recs.forEach(r=>{ rank[r.cliente]=(rank[r.cliente]||0)+(numeroBR(r.valor)); });
   let sorted=Object.entries(rank).sort((a,b)=>b[1]-a[1]);
-  if(sorted.length>0) insights.push(`Destaque: ${sorted[0][0]} – R$ ${sorted[0][1].toLocaleString('pt-BR')}.`);
+  if(sorted.length>0) insights.push(`Destaque: ${sorted[0][0]} – ${moedaBR(sorted[0][1])}.`);
   if(lucro>0) insights.push("Bom lucro! Considere reinvestir ou reserva de emergência.");
   else if(lucro<0) insights.push("Receba mais rápido e negocie prazos com fornecedores.");
   return insights.map(i=>`<p style="margin-bottom:8px; font-size:14px; color:#e2e8f0">${i}</p>`).join('');
 }
 
 function renderDashGeral(recs,dess){
-  let tr=recs.reduce((a,r)=>a+(parseFloat(r.valor)||0),0);
-  let td=dess.reduce((a,d)=>a+(parseFloat(d.valor)||0),0);
+  let tr=recs.reduce((a,r)=>a+(numeroBR(r.valor)),0);
+  let td=dess.reduce((a,d)=>a+(numeroBR(d.valor)),0);
   let lucro=tr-td;
-  let sc=db.contas.reduce((a,c)=>a+(parseFloat(c.saldo)||0),0);
+  let sc=db.contas.reduce((a,c)=>a+(numeroBR(c.saldo)),0);
   let rent=tr>0?Math.max(0,Math.min(100,Math.round((lucro/tr)*100))):0;
   let saude=(tr===0&&td===0)?0:(tr>td?85:45);
   let custos=tr>0?Math.min(100,Math.round((td/tr)*100)):0;
   let cresc=tr>0?Math.min(100,Math.max(-100,Math.round((lucro/tr)*50))):(td>0?-50:0);
-  let ranking={}; recs.forEach(r=>{ ranking[r.cliente]=(ranking[r.cliente]||0)+(parseFloat(r.valor)||0); });
+  let ranking={}; recs.forEach(r=>{ ranking[r.cliente]=(ranking[r.cliente]||0)+(numeroBR(r.valor)); });
   let sortedR=Object.entries(ranking).sort((a,b)=>b[1]-a[1]).slice(0,5);
   document.getElementById('dash-content').innerHTML=`
   <div class="dash-grid">
-    <div class="dash-card card-receita"><h4><span style="color:#22c55e">●</span> Receita</h4><div class="value">R$ ${tr.toLocaleString('pt-BR')}</div></div>
-    <div class="dash-card card-despesa"><h4><span style="color:#ef4444">●</span> Despesas</h4><div class="value">R$ ${td.toLocaleString('pt-BR')}</div></div>
-    <div class="dash-card ${lucro>=0?'card-lucro':'card-prejuizo'}"><h4><span style="color:${lucro>=0?'#3b82f6':'#ef4444'}">●</span> ${lucro>=0?'Lucro':'Prejuízo'}</h4><div class="value">R$ ${lucro.toLocaleString('pt-BR')}</div></div>
-    <div class="dash-card card-caixa"><h4><span style="color:#a855f7">●</span> Caixa Total</h4><div class="value">R$ ${sc.toLocaleString('pt-BR')}</div></div>
+    <div class="dash-card card-receita"><h4><span style="color:#22c55e">●</span> Receita</h4><div class="value">${moedaBR(tr)}</div></div>
+    <div class="dash-card card-despesa"><h4><span style="color:#ef4444">●</span> Despesas</h4><div class="value">${moedaBR(td)}</div></div>
+    <div class="dash-card ${lucro>=0?'card-lucro':'card-prejuizo'}"><h4><span style="color:${lucro>=0?'#3b82f6':'#ef4444'}">●</span> ${lucro>=0?'Lucro':'Prejuízo'}</h4><div class="value">${moedaBR(lucro)}</div></div>
+    <div class="dash-card card-caixa"><h4><span style="color:#a855f7">●</span> Caixa Total</h4><div class="value">${moedaBR(sc)}</div></div>
     <div class="dash-card card-ia"><h4><span style="color:#f59e0b">●</span> IA Análise</h4><div class="ia-insights" style="font-size:12px">${gerarAnaliseIA(recs,dess)}</div></div>
   </div>
   <div class="main-grid">
@@ -927,7 +1031,7 @@ function renderDashGeral(recs,dess){
   <div class="card">
     <h3>🏆 Ranking de Clientes</h3>
     <table style="margin-top:0">
-      ${sortedR.map((item,i)=>`<tr><td style="width:40px; font-weight:bold; color:#f59e0b">${i+1}º</td><td>${item[0]}</td><td style="text-align:right; font-weight:bold">R$ ${item[1].toLocaleString('pt-BR')}</td><td style="width:200px"><div class="progress-bg"><div class="progress-fill" style="width:${tr>0?(item[1]/tr*100).toFixed(0):0}%; background:#22c55e"></div></div></td></tr>`).join('')}
+      ${sortedR.map((item,i)=>`<tr><td style="width:40px; font-weight:bold; color:#f59e0b">${i+1}º</td><td>${item[0]}</td><td style="text-align:right; font-weight:bold">${moedaBR(item[1])}</td><td style="width:200px"><div class="progress-bg"><div class="progress-fill" style="width:${tr>0?(item[1]/tr*100).toFixed(0):0}%; background:#22c55e"></div></div></td></tr>`).join('')}
       ${sortedR.length===0?'<tr><td colspan="4" style="color:#94a3b8">Nenhum dado disponível</td></tr>':''}
     </table>
   </div>`;
@@ -935,23 +1039,23 @@ function renderDashGeral(recs,dess){
 }
 
 function renderDashComissoes(recs){
-  let tv=recs.filter(r=>r.vendedor).reduce((a,r)=>a+(parseFloat(r.valor)||0),0);
+  let tv=recs.filter(r=>r.vendedor).reduce((a,r)=>a+(numeroBR(r.valor)),0);
   let va=[...new Set(recs.filter(r=>r.vendedor).map(r=>r.vendedor))];
   let tc=0, rv={};
   
   // Primeiro, agrupa as vendas por vendedor
   recs.filter(r=>r.vendedor).forEach(r=>{
     if(!rv[r.vendedor]) rv[r.vendedor] = {vendido:0, comissao:0, meta:0, bonus:0, atingiuMeta:false};
-    rv[r.vendedor].vendido += (parseFloat(r.valor)||0);
+    rv[r.vendedor].vendido += (numeroBR(r.valor));
   });
 
   // Depois, calcula a comissão baseada na meta
   Object.keys(rv).forEach(nome => {
     let v = db.vendedores.find(vend => vend.nome === nome);
     if(v) {
-      rv[nome].meta = parseFloat(v.meta)||0;
-      rv[nome].bonus = parseFloat(v.comissaoBonus)||0;
-      rv[nome].comissaoBase = parseFloat(v.comissao)||0;
+      rv[nome].meta = numeroBR(v.meta);
+      rv[nome].bonus = numeroBR(v.comissaoBonus);
+      rv[nome].comissaoBase = numeroBR(v.comissao);
       rv[nome].atingiuMeta = (rv[nome].meta > 0 && rv[nome].vendido >= rv[nome].meta);
       
       let p = rv[nome].atingiuMeta ? rv[nome].bonus : rv[nome].comissaoBase;
@@ -975,10 +1079,10 @@ function renderDashComissoes(recs){
   
   document.getElementById('dash-content').innerHTML=`
   <div class="dash-grid">
-    <div class="dash-card card-vendido"><h4>💰 Total Vendido</h4><div class="value">R$ ${tv.toLocaleString('pt-BR')}</div><span style="font-size:12px; color:#94a3b8">Período: ${periodoTexto}</span></div>
+    <div class="dash-card card-vendido"><h4>💰 Total Vendido</h4><div class="value">${moedaBR(tv)}</div><span style="font-size:12px; color:#94a3b8">Período: ${periodoTexto}</span></div>
     <div class="dash-card card-vendedores"><h4>👥 Vendedores</h4><div class="value">${va.length}</div></div>
-    <div class="dash-card card-total-comissao"><h4>💸 Total Comissão</h4><div class="value">R$ ${tc.toLocaleString('pt-BR')}</div></div>
-    <div class="dash-card card-media-comissao"><h4>📊 Média Comissão</h4><div class="value">R$ ${mc.toLocaleString('pt-BR')}</div></div>
+    <div class="dash-card card-total-comissao"><h4>💸 Total Comissão</h4><div class="value">${moedaBR(tc)}</div></div>
+    <div class="dash-card card-media-comissao"><h4>📊 Média Comissão</h4><div class="value">${moedaBR(mc)}</div></div>
   </div>
   <div class="card">
     <h3>🏆 Ranking e Metas de Vendedores (${periodoTexto})</h3>
@@ -996,14 +1100,14 @@ function renderDashComissoes(recs){
         let info = item[1];
         let percMeta = info.meta > 0 ? Math.min(100, (info.vendido / info.meta * 100)) : 100;
         let corProgresso = info.atingiuMeta ? '#22c55e' : '#f59e0b';
-        let statusMeta = info.meta > 0 ? (info.atingiuMeta ? 'META ATINGIDA!' : `Faltam R$ ${(info.meta - info.vendido).toLocaleString('pt-BR')}`) : 'Sem meta';
+        let statusMeta = info.meta > 0 ? (info.atingiuMeta ? 'META ATINGIDA!' : `Faltam ${moedaBR(info.meta - info.vendido)}`) : 'Sem meta';
         return `<tr>
           <td style="font-weight:bold; color:#f59e0b">${i+1}º</td>
           <td>${item[0]} ${info.atingiuMeta ? '🏆' : ''}</td>
-          <td style="font-weight:bold">R$ ${info.vendido.toLocaleString('pt-BR')}</td>
-          <td style="color:#94a3b8">R$ ${info.meta.toLocaleString('pt-BR')}</td>
+          <td style="font-weight:bold">${moedaBR(info.vendido)}</td>
+          <td style="color:#94a3b8">${moedaBR(info.meta)}</td>
           <td style="color:${info.atingiuMeta?'#22c55e':'#94a3b8'}">${info.percAplicado}% ${info.atingiuMeta?'(Bônus)':''}</td>
-          <td style="color:#22c55e; font-weight:bold">R$ ${info.comissao.toLocaleString('pt-BR')}</td>
+          <td style="color:#22c55e; font-weight:bold">${moedaBR(info.comissao)}</td>
           <td style="width:200px">
             <div class="progress-bg">
               <div class="progress-fill" style="width:${percMeta}%; background:${corProgresso}"></div>
@@ -1018,9 +1122,9 @@ function renderDashComissoes(recs){
 }
 
 function renderDashDRE(recs,dess){
-  let rg={}; recs.forEach(r=>{ rg[r.grupo]=(rg[r.grupo]||0)+(parseFloat(r.valor)||0); });
+  let rg={}; recs.forEach(r=>{ rg[r.grupo]=(rg[r.grupo]||0)+(numeroBR(r.valor)); });
   let trb=Object.values(rg).reduce((a,b)=>a+b,0);
-  let dg={}; dess.forEach(d=>{ dg[d.grupo]=(dg[d.grupo]||0)+(parseFloat(d.valor)||0); });
+  let dg={}; dess.forEach(d=>{ dg[d.grupo]=(dg[d.grupo]||0)+(numeroBR(d.valor)); });
   let td=Object.values(dg).reduce((a,b)=>a+b,0);
   let ll=trb-td;
   document.getElementById('dash-content').innerHTML=`
@@ -1028,14 +1132,14 @@ function renderDashDRE(recs,dess){
     <h3>Demonstrativo do Resultado do Exercício (DRE)</h3>
     <table style="margin-top:20px">
       <tr style="background:#1e293b"><th colspan="2">DESCRIÇÃO</th><th style="text-align:right">VALOR</th></tr>
-      <tr style="font-weight:bold; color:#22c55e"><td>(+) RECEITA OPERACIONAL BRUTA</td><td></td><td style="text-align:right">R$ ${trb.toLocaleString('pt-BR')}</td></tr>
-      ${Object.entries(rg).map(([g,v])=>`<tr style="font-size:12px; color:#94a3b8"><td>&nbsp;&nbsp;&nbsp;&nbsp;${g}</td><td></td><td style="text-align:right">R$ ${v.toLocaleString('pt-BR')}</td></tr>`).join('')}
-      <tr style="font-weight:bold"><td>(=) RECEITA LÍQUIDA</td><td></td><td style="text-align:right">R$ ${trb.toLocaleString('pt-BR')}</td></tr>
-      <tr style="font-weight:bold; color:#ef4444"><td>(-) DESPESAS OPERACIONAIS</td><td></td><td style="text-align:right">R$ ${td.toLocaleString('pt-BR')}</td></tr>
-      ${Object.entries(dg).map(([g,v])=>`<tr style="font-size:12px; color:#94a3b8"><td>&nbsp;&nbsp;&nbsp;&nbsp;${g}</td><td></td><td style="text-align:right">R$ ${v.toLocaleString('pt-BR')}</td></tr>`).join('')}
+      <tr style="font-weight:bold; color:#22c55e"><td>(+) RECEITA OPERACIONAL BRUTA</td><td></td><td style="text-align:right">${moedaBR(trb)}</td></tr>
+      ${Object.entries(rg).map(([g,v])=>`<tr style="font-size:12px; color:#94a3b8"><td>&nbsp;&nbsp;&nbsp;&nbsp;${g}</td><td></td><td style="text-align:right">${moedaBR(v)}</td></tr>`).join('')}
+      <tr style="font-weight:bold"><td>(=) RECEITA LÍQUIDA</td><td></td><td style="text-align:right">${moedaBR(trb)}</td></tr>
+      <tr style="font-weight:bold; color:#ef4444"><td>(-) DESPESAS OPERACIONAIS</td><td></td><td style="text-align:right">${moedaBR(td)}</td></tr>
+      ${Object.entries(dg).map(([g,v])=>`<tr style="font-size:12px; color:#94a3b8"><td>&nbsp;&nbsp;&nbsp;&nbsp;${g}</td><td></td><td style="text-align:right">${moedaBR(v)}</td></tr>`).join('')}
       <tr style="height:20px"><td></td><td></td><td></td></tr>
       <tr style="background:#1e293b; font-weight:bold; font-size:16px; color:${ll>=0?'#22c55e':'#ef4444'}">
-        <td>(=) RESULTADO LÍQUIDO</td><td></td><td style="text-align:right">R$ ${ll.toLocaleString('pt-BR')}</td>
+        <td>(=) RESULTADO LÍQUIDO</td><td></td><td style="text-align:right">${moedaBR(ll)}</td>
       </tr>
     </table>
   </div>`;
@@ -1043,15 +1147,15 @@ function renderDashDRE(recs,dess){
 
 function renderDashFluxo(){
   const hoje=new Date(); hoje.setHours(0,0,0,0);
-  let sa=db.contas.reduce((a,c)=>a+(parseFloat(c.saldo)||0),0);
-  const gp=(dias)=>{ let dl=new Date(); dl.setDate(hoje.getDate()+dias); dl.setHours(23,59,59,999); let e=db.receitas.filter(r=>{ let d=new Date(r.vencimento+"T00:00:00"); return d>=hoje&&d<=dl; }).reduce((a,r)=>a+(parseFloat(r.valor)||0),0); let s=db.despesas.filter(d=>{ let dt=new Date(d.vencimento+"T00:00:00"); return dt>=hoje&&dt<=dl; }).reduce((a,d)=>a+(parseFloat(d.valor)||0),0); return{e,s,saldo:sa+e-s}; };
+  let sa=db.contas.reduce((a,c)=>a+(numeroBR(c.saldo)),0);
+  const gp=(dias)=>{ let dl=new Date(); dl.setDate(hoje.getDate()+dias); dl.setHours(23,59,59,999); let e=db.receitas.filter(r=>{ let d=new Date(r.vencimento+"T00:00:00"); return d>=hoje&&d<=dl; }).reduce((a,r)=>a+(numeroBR(r.valor)),0); let s=db.despesas.filter(d=>{ let dt=new Date(d.vencimento+"T00:00:00"); return dt>=hoje&&dt<=dl; }).reduce((a,d)=>a+(numeroBR(d.valor)),0); return{e,s,saldo:sa+e-s}; };
   let p7=gp(7),p15=gp(15),p30=gp(30),p60=gp(60),sd=gp(0);
   const cpm=(lista)=>{ let t=0,c=0; lista.forEach(i=>{ if(i.situacao!=="Pago"&&i.situacao!=="Recebido"){ let v=new Date(i.vencimento+"T00:00:00"); let d=Math.ceil((v-hoje)/(864e5)); if(d>=0){t+=d;c++;} } }); return c>0?Math.round(t/c):0; };
   document.getElementById('dash-content').innerHTML=`
   <div class="dash-grid">
-    <div class="dash-card card-saldo-atual"><h4>💳 Saldo Atual</h4><div class="value">R$ ${sa.toLocaleString('pt-BR')}</div></div>
-    <div class="dash-card card-saldo-dia"><h4>📅 Saldo do Dia</h4><div class="value">R$ ${sd.saldo.toLocaleString('pt-BR')}</div></div>
-    <div class="dash-card card-projecao-30"><h4>📊 Projeção 30 dias</h4><div class="value">R$ ${p30.saldo.toLocaleString('pt-BR')}</div></div>
+    <div class="dash-card card-saldo-atual"><h4>💳 Saldo Atual</h4><div class="value">${moedaBR(sa)}</div></div>
+    <div class="dash-card card-saldo-dia"><h4>📅 Saldo do Dia</h4><div class="value">${moedaBR(sd.saldo)}</div></div>
+    <div class="dash-card card-projecao-30"><h4>📊 Projeção 30 dias</h4><div class="value">${moedaBR(p30.saldo)}</div></div>
     <div class="dash-card card-prazo-pagto"><h4>⌛ Prazo Médio Pagamento</h4><div class="value">${cpm(db.despesas)} dias</div></div>
     <div class="dash-card card-prazo-receb"><h4>⌛ Prazo Médio Recebimento</h4><div class="value">${cpm(db.receitas)} dias</div></div>
   </div>
@@ -1059,16 +1163,16 @@ function renderDashFluxo(){
     <h3>📈 Projeção de Caixa</h3>
     <div class="dash-grid" style="margin-top:20px">
       ${[{d:'7 dias',p:p7},{d:'15 dias',p:p15},{d:'30 dias',p:p30},{d:'60 dias',p:p60}].map(({d,p})=>`
-      <div class="dash-card"><h4 style="color:#94a3b8">${d}</h4><div class="value">R$ ${p.saldo.toLocaleString('pt-BR')}</div>
-      <div style="font-size:12px; margin-top:10px"><span style="color:#22c55e">+ R$ ${p.e.toLocaleString('pt-BR')}</span><br><span style="color:#ef4444">- R$ ${p.s.toLocaleString('pt-BR')}</span></div></div>`).join('')}
+      <div class="dash-card"><h4 style="color:#94a3b8">${d}</h4><div class="value">${moedaBR(p.saldo)}</div>
+      <div style="font-size:12px; margin-top:10px"><span style="color:#22c55e">+ ${moedaBR(p.e)}</span><br><span style="color:#ef4444">- ${moedaBR(p.s)}</span></div></div>`).join('')}
     </div>
   </div>`;
 }
 
 function initCharts(recs,dess,rent){
   let meses={}; const gma=(s)=>s.slice(0,7);
-  recs.forEach(r=>{ let ma=gma(r.vencimento); if(!meses[ma]) meses[ma]={r:0,d:0}; meses[ma].r+=parseFloat(r.valor)||0; });
-  dess.forEach(d=>{ let ma=gma(d.vencimento); if(!meses[ma]) meses[ma]={r:0,d:0}; meses[ma].d+=parseFloat(d.valor)||0; });
+  recs.forEach(r=>{ let ma=gma(r.vencimento); if(!meses[ma]) meses[ma]={r:0,d:0}; meses[ma].r+=numeroBR(r.valor); });
+  dess.forEach(d=>{ let ma=gma(d.vencimento); if(!meses[ma]) meses[ma]={r:0,d:0}; meses[ma].d+=numeroBR(d.valor); });
   let labels=Object.keys(meses).sort();
   new Chart(document.getElementById('chartLucro').getContext('2d'),{type:'line',data:{labels:labels.map(l=>l.split('-').reverse().join('/')),datasets:[{label:'Receita',data:labels.map(l=>meses[l].r),borderColor:'#22c55e',tension:.4,fill:false},{label:'Despesa',data:labels.map(l=>meses[l].d),borderColor:'#ef4444',tension:.4,fill:false}]},options:{responsive:true,plugins:{legend:{labels:{color:'#94a3b8'}}},scales:{y:{grid:{color:'#1e293b'},ticks:{color:'#94a3b8'}},x:{grid:{display:false},ticks:{color:'#94a3b8'}}}}});
   new Chart(document.getElementById('chartScore').getContext('2d'),{type:'doughnut',data:{datasets:[{data:[rent||.1,100-(rent||.1)],backgroundColor:[rent>0?'#3b82f6':'#1e293b','#1e293b'],borderWidth:0}]},options:{cutout:'80%',plugins:{tooltip:{enabled:false}}}});
@@ -1077,7 +1181,11 @@ function initCharts(recs,dess,rent){
 /* ================================================================
    GESTÃO (CRUD)
 ================================================================ */
-function openModal(html){ modal.style.display="flex"; document.getElementById("modal-body").innerHTML=html; }
+function openModal(html){
+  modal.style.display="flex";
+  document.getElementById("modal-body").innerHTML=html;
+  setTimeout(prepararCamposMoeda, 0);
+}
 function closeModal(){ modal.style.display="none"; }
 function label(m){ return{contas:"Conta",clientes:"Cliente",fornecedores:"Fornecedor",vendedores:"Vendedor"}[m]; }
 function plural(m){ return{contas:"Contas",clientes:"Clientes",fornecedores:"Fornecedores",vendedores:"Vendedores"}[m]; }
@@ -1089,7 +1197,7 @@ function renderLista(m){
   let html=`<h2>${prefixoLista(m)} ${plural(m)}</h2><button class="btn-secondary" onclick="renderSubmenu('${m}')">Voltar</button><button class="btn-primary" onclick="renderForm('${m}')">+ ${label(m)}</button><hr>`;
   db[m].forEach((i,idx)=>{
     let det="";
-    if(m==="contas") det=`<div class="detail" style="display:block">${i.banco} | ${i.tipo} | Saldo: R$ ${i.saldo}</div>`;
+    if(m==="contas") det=`<div class="detail" style="display:block">${i.banco} | ${i.tipo} | Saldo: ${moedaBR(numeroBR(i.saldo))}</div>`;
     else if(m==="vendedores") det=`<div id="det-${m}-${idx}" class="detail">Comissão: ${i.comissao}%<br>CPF/CNPJ: ${i.doc}<br>${i.cidade} - ${i.estado}</div>`;
     else det=`<div id="det-${m}-${idx}" class="detail">CPF/CNPJ: ${i.doc}<br>Endereço: ${i.end}<br>${i.cidade} - ${i.estado}</div>`;
     html+=`<div class="card"><div class="row"><div onclick="${m==='contas'?'':'toggleDetalhe(\''+m+'\','+idx+')'}" style="cursor:pointer;font-weight:bold">${i.nome}</div><div><button class="btn-primary" onclick="renderForm('${m}',${idx})">Editar</button><button class="btn-danger" onclick="removeItem('${m}',${idx})">Excluir</button></div></div>${det}</div>`;
@@ -1119,7 +1227,7 @@ function renderFormVendedor(index=null){
     <hr>
     <div style="display:flex; gap:10px">
       <div style="flex:1"><label>% Comissão Base</label><input id="comissao" type="number" value="${i.comissao}"></div>
-      <div style="flex:1"><label>Meta de Vendas (R$)</label><input id="meta" type="number" value="${i.meta||0}"></div>
+      <div style="flex:1"><label>Meta de Vendas (R$)</label><input id="meta" data-moeda="br" value="${moedaBR(numeroBR(i.meta||0))}"></div>
       <div style="flex:1"><label>% Comissão Bônus</label><input id="comissaoBonus" type="number" value="${i.comissaoBonus||0}"></div>
     </div>
     <p style="font-size:11px; color:#94a3b8; margin-top:5px">Dica: Se o vendedor vender mais que a meta, a comissão bônus será aplicada.</p>
@@ -1128,7 +1236,7 @@ function renderFormVendedor(index=null){
 
 function renderFormConta(index=null){
   let i=index!==null?db.contas[index]:{nome:"",banco:"",tipo:"Corrente",saldo:""};
-  openModal(`<h3>${index===null?"Cadastrar":"Editar"} Conta</h3><label>Nome</label><input id="nome" value="${i.nome}"><label>Banco</label><input id="banco" value="${i.banco}"><label>Tipo</label><select id="tipo"><option>Corrente</option><option>Caixa</option><option>Carteira</option><option>Investimento</option></select><label>Saldo Inicial</label><input id="saldo" value="${i.saldo}"><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveConta(${index})">Salvar</button></div>`);
+  openModal(`<h3>${index===null?"Cadastrar":"Editar"} Conta</h3><label>Nome</label><input id="nome" value="${i.nome}"><label>Banco</label><input id="banco" value="${i.banco}"><label>Tipo</label><select id="tipo"><option>Corrente</option><option>Caixa</option><option>Carteira</option><option>Investimento</option></select><label>Saldo Inicial / Base do Caixa</label><input id="saldo" data-moeda="br" value="${moedaBR(numeroBR(i.saldoInicial!==undefined?i.saldoInicial:i.saldo))}"><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveConta(${index})">Salvar</button></div>`);
 }
 
 async function saveCadastro(m,index){ let obj={nome:nome.value,doc:doc.value,end:end.value,cidade:cidade.value,estado:estado.value}; if(index===null||index==="null") db[m].push(obj); else db[m][index]=obj; await persist(m); closeModal(); renderLista(m); }
@@ -1140,7 +1248,7 @@ async function saveVendedor(index){
     cidade:cidade.value,
     estado:estado.value,
     comissao:parseFloat(comissao.value)||0,
-    meta:parseFloat(meta.value)||0,
+    meta:numeroBR(meta.value),
     comissaoBonus:parseFloat(comissaoBonus.value)||0
   }; 
   if(index===null||index==="null") db.vendedores.push(obj); else db.vendedores[index]=obj; 
@@ -1148,7 +1256,13 @@ async function saveVendedor(index){
   closeModal(); 
   renderLista("vendedores"); 
 }
-async function saveConta(index){ let obj={nome:nome.value,banco:banco.value,tipo:tipo.value,saldo:parseFloat(saldo.value)||0}; if(index===null||index==="null") db.contas.push(obj); else db.contas[index]=obj; await persist("contas"); closeModal(); renderLista("contas"); }
+async function saveConta(index){
+  let saldoBase=numeroBR(saldo.value);
+  let obj={nome:nome.value,banco:banco.value,tipo:tipo.value,saldoInicial:saldoBase,saldo:saldoBase};
+  if(index===null||index==="null") db.contas.push(obj); else db.contas[index]=obj;
+  recalcularSaldosContas();
+  await persist("contas"); closeModal(); renderLista("contas");
+}
 async function removeItem(m,i){ db[m].splice(i,1); await persist(m); renderLista(m); }
 
 /* ================================================================
@@ -1159,14 +1273,14 @@ function renderDespesas(){ conteudo.innerHTML=`<h2>Despesas</h2><button class="b
 function renderFormDespesa(index=null){
   let d=index!==null?db.despesas[index]:{fornecedor:"",conta:"",grupo:"",subgrupo:"",vencimento:"",valor:"",situacao:"A pagar",dataPagamento:""};
   let pessoas=[...db.fornecedores,...db.vendedores];
-  openModal(`<h3>${index===null?"Cadastrar":"Editar"} Despesa</h3><label>Fornecedor / Vendedor</label><select id="fornecedor">${pessoas.map(p=>`<option ${p.nome===d.fornecedor?"selected":""}>${p.nome}</option>`).join("")}</select><label>Conta</label><select id="conta">${db.contas.map(c=>`<option ${c.nome===d.conta?"selected":""}>${c.nome}</option>`).join("")}</select><label>Grupo</label><select id="grupo" onchange="carregarSubgrupos()">${db.gruposDespesas.map(g=>`<option ${g===d.grupo?"selected":""}>${g}</option>`).join("")}</select><label>Subgrupo</label><select id="subgrupo"></select><label>Vencimento</label><input type="date" id="vencimento" value="${d.vencimento}"><label>Valor</label><input id="valor" value="${d.valor}"><label>Situação</label><select id="situacao" onchange="togglePagamento()"><option ${d.situacao==="A pagar"?"selected":""}>A pagar</option><option ${d.situacao==="Pago"?"selected":""}>Pago</option></select><div id="boxPagamento" style="display:none"><label>Data pagamento</label><input type="date" id="dataPagamento" value="${d.dataPagamento||""}"></div><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveDespesa(${index})">Salvar</button></div>`);
+  openModal(`<h3>${index===null?"Cadastrar":"Editar"} Despesa</h3><label>Fornecedor / Vendedor</label><select id="fornecedor">${pessoas.map(p=>`<option ${p.nome===d.fornecedor?"selected":""}>${p.nome}</option>`).join("")}</select><label>Conta</label><select id="conta">${db.contas.map(c=>`<option ${c.nome===d.conta?"selected":""}>${c.nome}</option>`).join("")}</select><label>Grupo</label><select id="grupo" onchange="carregarSubgrupos()">${db.gruposDespesas.map(g=>`<option ${g===d.grupo?"selected":""}>${g}</option>`).join("")}</select><label>Subgrupo</label><select id="subgrupo"></select><label>Vencimento</label><input type="date" id="vencimento" value="${d.vencimento}"><label>Valor</label><input id="valor" data-moeda="br" value="${moedaBR(numeroBR(d.valor))}"><label>Situação</label><select id="situacao" onchange="togglePagamento()"><option ${d.situacao==="A pagar"?"selected":""}>A pagar</option><option ${d.situacao==="Pago"?"selected":""}>Pago</option></select><div id="boxPagamento" style="display:none"><label>Data pagamento</label><input type="date" id="dataPagamento" value="${d.dataPagamento||""}"></div><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveDespesa(${index})">Salvar</button></div>`);
   setTimeout(()=>{ carregarSubgrupos(d.subgrupo); togglePagamento(); },100);
 }
 
 function carregarSubgrupos(sel=""){ subgrupo.innerHTML=db.subgruposDespesas.filter(s=>s.grupo===grupo.value).map(s=>`<option ${s.nome===sel?"selected":""}>${s.nome}</option>`).join(""); }
 function togglePagamento(){ boxPagamento.style.display=situacao.value==="Pago"?"block":"none"; }
 async function saveDespesa(index){ 
-  let novaObj={fornecedor:fornecedor.value,conta:conta.value,grupo:grupo.value,subgrupo:subgrupo.value,vencimento:vencimento.value,valor:parseFloat(valor.value)||0,situacao:situacao.value,dataPagamento:situacao.value==="Pago"?dataPagamento.value:""};
+  let novaObj={fornecedor:fornecedor.value,conta:conta.value,grupo:grupo.value,subgrupo:subgrupo.value,vencimento:vencimento.value,valor:numeroBR(valor.value),situacao:situacao.value,dataPagamento:situacao.value==="Pago"?dataPagamento.value:""};
   let transacaoAnterior=index!==null&&index!=="null"?db.despesas[index]:null;
   await ajustarSaldoPorTransacao('despesa',novaObj,transacaoAnterior);
   if(index===null||index==="null") db.despesas.push(novaObj); else db.despesas[index]=novaObj; 
@@ -1187,25 +1301,25 @@ function renderListaDespesas(){
 function filtrarDespesas(){
   const hoje=new Date(),mes=fMes?.value||"Todas",conta=fConta?.value||"Todas",sit=fSituacao?.value||"Todas";
   let html=`<table><tr><th>Vencimento</th><th>Fornecedor</th><th>Conta</th><th>Grupo</th><th>Subgrupo</th><th>Valor</th><th>Situação</th><th>Ações</th></tr>`;
-  db.despesas.forEach((d,i)=>{ let s=d.situacao; if(s!=="Pago"&&new Date(d.vencimento)<hoje) s="Pendente"; let dm=d.vencimento.slice(5,7)+"/"+d.vencimento.slice(2,4); if((mes==="Todas"||dm===mes)&&(conta==="Todas"||d.conta===conta)&&(sit==="Todas"||s===sit)) html+=`<tr><td>${d.vencimento}</td><td>${d.fornecedor}</td><td>${d.conta}</td><td>${d.grupo}</td><td>${d.subgrupo}</td><td>R$ ${d.valor}</td><td>${s}</td><td><button class="btn-primary" onclick="renderFormDespesa(${i})">Editar</button><button class="btn-secondary" onclick="baixarDespesa(${i})">Baixa</button><button class="btn-danger" onclick="excluirDespesa(${i})">Excluir</button></td></tr>`; });
+  db.despesas.forEach((d,i)=>{ let s=d.situacao; if(s!=="Pago"&&new Date(d.vencimento)<hoje) s="Pendente"; let dm=d.vencimento.slice(5,7)+"/"+d.vencimento.slice(2,4); if((mes==="Todas"||dm===mes)&&(conta==="Todas"||d.conta===conta)&&(sit==="Todas"||s===sit)) html+=`<tr><td>${d.vencimento}</td><td>${d.fornecedor}</td><td>${d.conta}</td><td>${d.grupo}</td><td>${d.subgrupo}</td><td>${moedaBR(numeroBR(d.valor))}</td><td>${s}</td><td><button class="btn-primary" onclick="renderFormDespesa(${i})">Editar</button><button class="btn-secondary" onclick="baixarDespesa(${i})">Baixa</button><button class="btn-danger" onclick="excluirDespesa(${i})">Excluir</button></td></tr>`; });
   html+="</table>"; tabelaDespesas.innerHTML=html;
 }
 
-function baixarDespesa(i){ const d=db.despesas[i]; openModal(`<h3>Baixar Despesa</h3><table><tr><th>Vencimento</th><th>Data pagamento</th><th>Valor pago</th></tr><tr><td>${d.vencimento}</td><td><input type="date" id="dataPgto"></td><td><input id="valorPgto" value="${d.valor}"></td></tr></table><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Fechar</button><button class="btn-primary" onclick="confirmarBaixa(${i})">Baixar</button></div>`); }
+function baixarDespesa(i){ const d=db.despesas[i]; openModal(`<h3>Baixar Despesa</h3><table><tr><th>Vencimento</th><th>Data pagamento</th><th>Valor pago</th></tr><tr><td>${d.vencimento}</td><td><input type="date" id="dataPgto"></td><td><input id="valorPgto" data-moeda="br" value="${moedaBR(numeroBR(d.valor))}"></td></tr></table><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Fechar</button><button class="btn-primary" onclick="confirmarBaixa(${i})">Baixar</button></div>`); }
 async function confirmarBaixa(i){ 
-  if(parseFloat(valorPgto.value)!==parseFloat(db.despesas[i].valor)){ alert("Valor deve ser igual ao da despesa"); return; } 
+  if(numeroBR(valorPgto.value)!==numeroBR(db.despesas[i].valor)){ alert("Valor deve ser igual ao da despesa"); return; } 
   const despesa=db.despesas[i]; 
   const contaNome=despesa.conta; 
   const contaIndex=db.contas.findIndex(c=>c.nome===contaNome); 
   if(contaIndex===-1){ alert("Conta não encontrada"); return; } 
-  const valorDespesa=parseFloat(despesa.valor)||0; 
-  const saldoAtual=parseFloat(db.contas[contaIndex].saldo)||0; 
+  const valorDespesa=numeroBR(despesa.valor); 
+  const saldoAtual=numeroBR(db.contas[contaIndex].saldo); 
   db.contas[contaIndex].saldo=saldoAtual-valorDespesa; 
   despesa.situacao="Pago"; 
   despesa.dataPagamento=dataPgto.value; 
   await persist("contas"); 
   await persist("despesas"); 
-  mostrarToast("✓ Despesa baixada! Caixa atualizado para R$ "+db.contas[contaIndex].saldo.toLocaleString('pt-BR')); 
+  mostrarToast("✓ Despesa baixada! Caixa atualizado para "+moedaBR(db.contas[contaIndex].saldo)); 
   closeModal(); 
   filtrarDespesas();
   atualizarDashboardGlobal();
@@ -1215,8 +1329,8 @@ async function excluirDespesa(i){
   if(despesa.situacao==="Pago"||despesa.situacao==="Recebido"){
     const contaIndex=db.contas.findIndex(c=>c.nome===despesa.conta);
     if(contaIndex!==-1){
-      const valor=parseFloat(despesa.valor)||0;
-      db.contas[contaIndex].saldo=(parseFloat(db.contas[contaIndex].saldo)||0)+valor;
+      const valor=numeroBR(despesa.valor);
+      db.contas[contaIndex].saldo=(numeroBR(db.contas[contaIndex].saldo))+valor;
       await persist("contas");
     }
   }
@@ -1287,7 +1401,7 @@ function renderFormReceita(identificador=null){
     <p style="font-size:12px;color:#94a3b8;margin-top:6px">Ao cadastrar venda parcelada nova, o sistema cria uma receita para cada parcela. Na edição, altera somente a parcela aberta.</p>
   </div>
   <label id="labelVencimentoReceita">Vencimento</label><input type="date" id="vencimento" value="${r.vencimento}">
-  <label>Valor ${index===null?'total':'da parcela'}</label><input id="valor" value="${r.valor}">
+  <label>Valor ${index===null?'total':'da parcela'}</label><input id="valor" data-moeda="br" value="${moedaBR(numeroBR(r.valor))}">
   <label>Situação</label><select id="situacao" onchange="toggleRecebimento()"><option ${r.situacao==="A receber"?"selected":""}>A receber</option><option ${r.situacao==="Recebido"?"selected":""}>Recebido</option></select>
   <div id="boxRecebimento" style="display:none"><label>Data recebimento</label><input type="date" id="dataRecebimento" value="${r.dataRecebimento||""}"></div>
   <div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveReceita('${index!==null?escaparJSReceita(r.id):''}')">Salvar</button></div>`);
@@ -1320,7 +1434,7 @@ async function saveReceita(identificador=null){
   const tipo=(document.getElementById('tipoVenda')?.value)||'avista';
   const dataVendaValor=(document.getElementById('dataVenda')?.value) || vencimento.value;
   const qtd=Math.max(1, parseInt((document.getElementById('qtdParcelas')?.value) || 1));
-  const valorTotal=parseFloat(valor.value)||0;
+  const valorTotal=numeroBR(valor.value);
   let transacaoAnterior=index!==null&&index!=="null"?db.receitas[index]:null;
 
   // Em edição, altera somente a receita/parcela aberta.
@@ -1355,6 +1469,7 @@ async function saveReceita(identificador=null){
       db.receitas.push(novaObj);
     }
   }
+  recalcularSaldosContas();
   await persist("receitas"); 
   await persist("contas");
   closeModal(); 
@@ -1379,19 +1494,20 @@ function filtrarReceitas(){
     if((mes==="Todas"||rm===mes)&&(conta==="Todas"||r.conta===conta)&&(sit==="Todas"||s===sit)){
       const tipoLabel=(r.tipoVenda||'avista')==='prazo'?'A prazo':'À vista';
       const parcelaLabel=(r.tipoVenda||'avista')==='prazo'?`${r.parcelaAtual||1}/${r.qtdParcelas||1}`:'-';
-      html+=`<tr><td>${r.dataVenda||r.vencimento||''}</td><td>${r.vencimento||''}</td><td>${tipoLabel}</td><td>${parcelaLabel}</td><td>${r.cliente||''}</td><td>${r.vendedor||"-"}</td><td>${r.conta||''}</td><td>${r.grupo||''}</td><td>${r.subgrupo||''}</td><td>R$ ${(parseFloat(r.valor)||0).toLocaleString('pt-BR')}</td><td>${s}</td><td><button class="btn-primary" onclick="renderFormReceita('${escaparJSReceita(r.id)}')">Editar</button><button class="btn-secondary" onclick="baixarReceita(${i})">Baixa</button><button class="btn-danger" onclick="excluirReceita(${i})">Excluir</button></td></tr>`;
+      html+=`<tr><td>${r.dataVenda||r.vencimento||''}</td><td>${r.vencimento||''}</td><td>${tipoLabel}</td><td>${parcelaLabel}</td><td>${r.cliente||''}</td><td>${r.vendedor||"-"}</td><td>${r.conta||''}</td><td>${r.grupo||''}</td><td>${r.subgrupo||''}</td><td>${moedaBR(numeroBR(r.valor))}</td><td>${s}</td><td><button class="btn-primary" onclick="renderFormReceita('${escaparJSReceita(r.id)}')">Editar</button><button class="btn-secondary" onclick="baixarReceita(${i})">Baixa</button><button class="btn-danger" onclick="excluirReceita(${i})">Excluir</button></td></tr>`;
     }
   });
   html+="</table>"; tabelaReceitas.innerHTML=html;
 }
 
-function baixarReceita(i){ const r=db.receitas[i]; openModal(`<h3>Baixar Receita</h3><table><tr><th>Vencimento</th><th>Data recebimento</th><th>Valor</th></tr><tr><td>${r.vencimento}</td><td><input type="date" id="dataReceb"></td><td><input id="valorReceb" value="${r.valor}"></td></tr></table><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Fechar</button><button class="btn-primary" onclick="confirmarBaixaReceita(${i})">Baixar</button></div>`); }
+function baixarReceita(i){ const r=db.receitas[i]; openModal(`<h3>Baixar Receita</h3><table><tr><th>Vencimento</th><th>Data recebimento</th><th>Valor</th></tr><tr><td>${r.vencimento}</td><td><input type="date" id="dataReceb"></td><td><input id="valorReceb" data-moeda="br" value="${moedaBR(numeroBR(r.valor))}"></td></tr></table><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Fechar</button><button class="btn-primary" onclick="confirmarBaixaReceita(${i})">Baixar</button></div>`); }
 async function confirmarBaixaReceita(i){ 
-  if(parseFloat(valorReceb.value)!==parseFloat(db.receitas[i].valor)){ alert("Valor deve ser igual ao da receita"); return; } 
+  if(numeroBR(valorReceb.value)!==numeroBR(db.receitas[i].valor)){ alert("Valor deve ser igual ao da receita"); return; } 
   const receitaAnterior={...db.receitas[i]};
   const novaReceita={...db.receitas[i],situacao:"Recebido",dataRecebimento:dataReceb.value,atualizadoEm:new Date().toISOString()};
   await ajustarSaldoPorTransacao('receita',novaReceita,receitaAnterior);
   db.receitas[i]=novaReceita;
+  recalcularSaldosContas();
   await persist("contas"); 
   await persist("receitas"); 
   mostrarToast("✓ Receita baixada! Caixa e comissão atualizados"); 
@@ -1400,16 +1516,9 @@ async function confirmarBaixaReceita(i){
   atualizarDashboardGlobal();
 }
 async function excluirReceita(i){ 
-  const receita=db.receitas[i];
-  if(receita.situacao==="Pago"||receita.situacao==="Recebido"){
-    const contaIndex=db.contas.findIndex(c=>c.nome===receita.conta);
-    if(contaIndex!==-1){
-      const valor=parseFloat(receita.valor)||0;
-      db.contas[contaIndex].saldo=(parseFloat(db.contas[contaIndex].saldo)||0)-valor;
-      await persist("contas");
-    }
-  }
   db.receitas.splice(i,1); 
+  recalcularSaldosContas();
+  await persist("contas");
   await persist("receitas"); 
   filtrarReceitas();
   atualizarDashboardGlobal();
@@ -1433,6 +1542,17 @@ function renderListaGrupoReceita(){
   db.gruposReceitas.forEach((g,gi)=>{ html+=`<div class="card"><div class="row"><b>${g}</b><div><button class="btn-primary btn-small" onclick="renderGrupoSubgrupoReceita('grupo',${gi})">Editar</button><button class="btn-danger btn-small" onclick="excluirGrupoReceita(${gi})">Excluir</button></div></div><div style="margin-top:8px">`; db.subgruposReceitas.filter(s=>s.grupo===g).forEach((s,si)=>{ html+=`<div class="item-list"><span>└ ${s.nome}</span><div><button class="btn-secondary btn-small" onclick="renderGrupoSubgrupoReceita('subgrupo',${gi},${si})">Editar</button><button class="btn-danger btn-small" onclick="excluirSubgrupoReceita(${gi},${si})">Excluir</button></div></div>`; }); html+="</div></div>"; });
   conteudo.innerHTML=html;
 }
+</script>
+
+<script>
+// Login seguro: nunca deixa a tela presa em "Verificando sessão".
+document.addEventListener('DOMContentLoaded', function(){
+  const loading = document.getElementById('login-loading');
+  const login = document.getElementById('login-screen');
+  const app = document.getElementById('main-app');
+  if(loading) loading.style.display = 'none';
+  if(login && (!app || app.style.display !== 'block')) login.style.display = 'flex';
+});
 </script>
 
 <script>
