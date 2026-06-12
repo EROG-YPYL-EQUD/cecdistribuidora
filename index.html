@@ -3,8 +3,16 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#020617">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ERP Financeiro">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
 <title>ERP Financeiro - Sistema Integrado</title>
-<!-- VERSAO: moeda-br-real-2026-05-30 -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <!-- ============================================================
@@ -366,7 +374,7 @@ hr{ border:none; height:1px; background:#1e293b; margin:18px 0; }
 </div>
 
 <!-- MODAL -->
-<div id="modal" onclick="if(event.target===this)closeModal()">
+<div id="modal">
   <div class="modal-box"><div id="modal-body"></div></div>
 </div>
 
@@ -382,8 +390,8 @@ let db = {
 };
 
 let abaAtiva='dashboard', telaAtiva='contas', dashAtivo='geral';
-console.log('✅ Versão moeda BR real carregada: vírgula nos centavos e ponto nos milhares');
 let filtroPeriodo='mes_atual', dataInicioCustom='', dataFimCustom='', mesesSelecionados=[];
+let chartEvolucaoFinanceira=null, chartExecutiveScore=null;
 
 /* ================================================================
    FIREBASE — LEITURA E ESCRITA
@@ -550,57 +558,43 @@ async function salvarTudoFirebase(){
 /* ================================================================
    MOEDA BRASILEIRA — FORMATAÇÃO E CONVERSÃO
 ================================================================ */
+function moedaBR(valor){
+  const n = Number(valor || 0);
+  return n.toLocaleString('pt-BR', {
+    style:'currency',
+    currency:'BRL',
+    minimumFractionDigits:2,
+    maximumFractionDigits:2
+  });
+}
+
 function numeroBR(valor){
   if(valor === null || valor === undefined) return 0;
-  if(typeof valor === 'number') return isNaN(valor) ? 0 : valor;
+  if(typeof valor === 'number') return valor;
 
   let v = String(valor).trim();
   if(!v) return 0;
 
-  v = v.replace(/R\$/g,'').replace(/\s/g,'').replace(/[^0-9,\.\-]/g,'');
+  v = v.replace(/R\$/g,'').replace(/\s/g,'');
 
-  const negativo = v.startsWith('-');
-  v = v.replace(/-/g,'');
-
-  const temVirgula = v.includes(',');
-  const temPonto = v.includes('.');
-
-  // Padrão brasileiro: 10,56 / 1.500,50
-  if(temVirgula){
-    const partes = v.split(',');
-    const centavos = partes.pop();
-    const inteiro = partes.join('').replace(/\./g,'') || '0';
-    const n = Number(inteiro + '.' + centavos);
-    return isNaN(n) ? 0 : (negativo ? -n : n);
+  // Padrão brasileiro: 1.500,50 -> 1500.50
+  if(v.includes(',')){
+    v = v.replace(/\./g,'').replace(',', '.');
+    const n = parseFloat(v);
+    return isNaN(n) ? 0 : n;
   }
 
-  // Sem vírgula:
-  // 10.56 = decimal digitado com ponto
-  // 1.000 = milhar brasileiro
-  if(temPonto){
+  // Se digitou no padrão americano por engano: 1500.50 -> 1500.50
+  // Se digitou 1.500 como milhar, vira 1500.
+  if(v.includes('.')){
     const partes = v.split('.');
     const ultima = partes[partes.length - 1];
-
-    if(partes.length === 2 && ultima.length > 0 && ultima.length <= 2){
-      const n = Number(v);
-      return isNaN(n) ? 0 : (negativo ? -n : n);
-    }
-
-    v = v.replace(/\./g,'');
+    const pareceDecimalAmericano = partes.length === 2 && ultima.length > 0 && ultima.length <= 2;
+    v = pareceDecimalAmericano ? v : v.replace(/\./g,'');
   }
 
-  const n = Number(v);
-  return isNaN(n) ? 0 : (negativo ? -n : n);
-}
-
-function moedaBR(valor){
-  const n = numeroBR(valor);
-  const negativo = n < 0;
-  const abs = Math.abs(n);
-  const fixo = abs.toFixed(2);
-  let [inteiro, centavos] = fixo.split('.');
-  inteiro = inteiro.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-  return (negativo ? '- ' : '') + 'R$ ' + inteiro + ',' + centavos;
+  const n = parseFloat(v);
+  return isNaN(n) ? 0 : n;
 }
 
 function normalizarDigitacaoMoedaBR(input){
@@ -609,8 +603,8 @@ function normalizarDigitacaoMoedaBR(input){
     .replace(/\s/g,'')
     .replace(/[^0-9,\.]/g,'');
 
-  // Se digitou 10.56, transforma visualmente em 10,56.
-  // Se digitou 1.000, mantém como milhar até sair do campo.
+  // Se o usuário digitar decimal com ponto, troca para vírgula.
+  // Ex.: 1500.50 -> 1500,50
   if(v.includes('.') && !v.includes(',')){
     const partes = v.split('.');
     const ultima = partes[partes.length - 1];
@@ -624,18 +618,15 @@ function normalizarDigitacaoMoedaBR(input){
 
 function formatarCampoMoeda(input){
   if(String(input.value || '').trim() === '') return;
-  input.value = moedaBR(input.value);
+  input.value = moedaBR(numeroBR(input.value));
 }
 
 function prepararCamposMoeda(){
   document.querySelectorAll('input[data-moeda="br"]').forEach(input=>{
-    input.type = 'text';
-    input.inputMode = 'decimal';
-    input.autocomplete = 'off';
-
-    if(input.value !== '') input.value = moedaBR(input.value);
+    if(input.value !== '') input.value = moedaBR(numeroBR(input.value));
 
     input.onfocus = function(){
+      // Remove R$ só para facilitar edição, mantendo padrão BR.
       if(this.value !== ''){
         this.value = this.value.replace(/R\$/g,'').trim();
         this.select();
@@ -871,9 +862,25 @@ async function ajustarSaldoPorTransacao(tipo, novaTransacao, transacaoAnterior=n
    GATILHO GLOBAL DE ATUALIZACAO DO DASHBOARD
 ================================================================ */
 async function atualizarDashboardGlobal(){
-  // Força a atualização de todas as abas do Dashboard sem redirecionar
+  // Atualiza o dashboard imediatamente quando ele estiver aberto.
+  // Quando estiver em Gestão, os dados já ficam no db{} e o dashboard renderiza atualizado ao abrir.
   if(abaAtiva === 'dashboard'){
-    processarDadosDashboard();
+    renderDashboard();
+  }
+}
+
+async function aposAlterarFinanceiro(tipoAtual=''){
+  // Centraliza atualização após qualquer mudança em receitas/despesas/baixas/exclusões.
+  recalcularSaldosContas();
+  await persist('contas');
+  if(tipoAtual === 'receitas') await persist('receitas');
+  if(tipoAtual === 'despesas') await persist('despesas');
+
+  if(abaAtiva === 'dashboard'){
+    renderDashboard();
+  }else if(abaAtiva === 'gestao'){
+    if(telaAtiva === 'receitas') renderListaReceitas();
+    if(telaAtiva === 'despesas') renderListaDespesas();
   }
 }
 
@@ -1018,10 +1025,10 @@ function renderDashGeral(recs,dess){
     <div class="dash-card card-ia"><h4><span style="color:#f59e0b">●</span> IA Análise</h4><div class="ia-insights" style="font-size:12px">${gerarAnaliseIA(recs,dess)}</div></div>
   </div>
   <div class="main-grid">
-    <div class="card"><h3>Evolução Financeira</h3><canvas id="chartLucro" style="max-height:300px"></canvas></div>
+    <div class="card"><h3>Evolução Financeira</h3><canvas id="chartLucro" style="height:300px; max-height:300px"></canvas></div>
     <div class="card">
       <h3>Executive Score</h3>
-      <div style="display:flex; justify-content:center; margin-bottom:20px"><canvas id="chartScore" style="max-width:150px; max-height:150px"></canvas></div>
+      <div style="display:flex; justify-content:center; margin-bottom:20px"><canvas id="chartScore" style="width:150px; height:150px; max-width:150px; max-height:150px"></canvas></div>
       <div class="score-item"><div class="score-label"><span>Rentabilidade</span><span>${rent}%</span></div><div class="progress-bg"><div class="progress-fill" style="width:${rent}%; background:#22c55e"></div></div></div>
       <div class="score-item"><div class="score-label"><span>Saúde</span><span>${saude}%</span></div><div class="progress-bg"><div class="progress-fill" style="width:${saude}%; background:#3b82f6"></div></div></div>
       <div class="score-item"><div class="score-label"><span>Custos</span><span>${custos}%</span></div><div class="progress-bg"><div class="progress-fill" style="width:${custos}%; background:#ef4444"></div></div></div>
@@ -1170,12 +1177,70 @@ function renderDashFluxo(){
 }
 
 function initCharts(recs,dess,rent){
-  let meses={}; const gma=(s)=>s.slice(0,7);
-  recs.forEach(r=>{ let ma=gma(r.vencimento); if(!meses[ma]) meses[ma]={r:0,d:0}; meses[ma].r+=numeroBR(r.valor); });
-  dess.forEach(d=>{ let ma=gma(d.vencimento); if(!meses[ma]) meses[ma]={r:0,d:0}; meses[ma].d+=numeroBR(d.valor); });
+  // Sempre destrói gráficos antigos antes de recriar.
+  // Isso evita o erro do Chart.js quando o dashboard é atualizado depois de salvar receita/despesa.
+  if(chartEvolucaoFinanceira){ try{ chartEvolucaoFinanceira.destroy(); }catch(e){} chartEvolucaoFinanceira=null; }
+  if(chartExecutiveScore){ try{ chartExecutiveScore.destroy(); }catch(e){} chartExecutiveScore=null; }
+
+  const canvasLucro=document.getElementById('chartLucro');
+  const canvasScore=document.getElementById('chartScore');
+  if(!canvasLucro || !canvasScore || typeof Chart === 'undefined') return;
+
+  let meses={};
+  const mesAno=(data)=>{
+    if(!data || typeof data !== 'string' || data.length < 7) return '';
+    return data.slice(0,7);
+  };
+
+  (recs||[]).forEach(r=>{
+    const ma=mesAno(r.vencimento || r.dataVenda);
+    if(!ma) return;
+    if(!meses[ma]) meses[ma]={r:0,d:0};
+    meses[ma].r += numeroBR(r.valor);
+  });
+
+  (dess||[]).forEach(d=>{
+    const ma=mesAno(d.vencimento);
+    if(!ma) return;
+    if(!meses[ma]) meses[ma]={r:0,d:0};
+    meses[ma].d += numeroBR(d.valor);
+  });
+
   let labels=Object.keys(meses).sort();
-  new Chart(document.getElementById('chartLucro').getContext('2d'),{type:'line',data:{labels:labels.map(l=>l.split('-').reverse().join('/')),datasets:[{label:'Receita',data:labels.map(l=>meses[l].r),borderColor:'#22c55e',tension:.4,fill:false},{label:'Despesa',data:labels.map(l=>meses[l].d),borderColor:'#ef4444',tension:.4,fill:false}]},options:{responsive:true,plugins:{legend:{labels:{color:'#94a3b8'}}},scales:{y:{grid:{color:'#1e293b'},ticks:{color:'#94a3b8'}},x:{grid:{display:false},ticks:{color:'#94a3b8'}}}}});
-  new Chart(document.getElementById('chartScore').getContext('2d'),{type:'doughnut',data:{datasets:[{data:[rent||.1,100-(rent||.1)],backgroundColor:[rent>0?'#3b82f6':'#1e293b','#1e293b'],borderWidth:0}]},options:{cutout:'80%',plugins:{tooltip:{enabled:false}}}});
+
+  // Se não houver dados no filtro atual, mostra o mês atual zerado em vez de deixar o gráfico quebrado/branco.
+  if(labels.length===0){
+    const hoje=new Date();
+    const ma=hoje.toISOString().slice(0,7);
+    meses[ma]={r:0,d:0};
+    labels=[ma];
+  }
+
+  chartEvolucaoFinanceira = new Chart(canvasLucro.getContext('2d'),{
+    type:'line',
+    data:{
+      labels:labels.map(l=>l.split('-').reverse().join('/')),
+      datasets:[
+        {label:'Receita',data:labels.map(l=>meses[l].r),borderColor:'#22c55e',backgroundColor:'rgba(34,197,94,.12)',tension:.4,fill:true},
+        {label:'Despesa',data:labels.map(l=>meses[l].d),borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.10)',tension:.4,fill:true}
+      ]
+    },
+    options:{
+      responsive:true,
+      maintainAspectRatio:false,
+      plugins:{legend:{labels:{color:'#94a3b8'}}},
+      scales:{
+        y:{grid:{color:'#1e293b'},ticks:{color:'#94a3b8',callback:(v)=>moedaBR(v)}},
+        x:{grid:{display:false},ticks:{color:'#94a3b8'}}
+      }
+    }
+  });
+
+  chartExecutiveScore = new Chart(canvasScore.getContext('2d'),{
+    type:'doughnut',
+    data:{datasets:[{data:[rent||.1,100-(rent||.1)],backgroundColor:[rent>0?'#3b82f6':'#1e293b','#1e293b'],borderWidth:0}]},
+    options:{cutout:'80%',plugins:{tooltip:{enabled:false}}}
+  });
 }
 
 /* ================================================================
@@ -1284,62 +1349,49 @@ async function saveDespesa(index){
   let transacaoAnterior=index!==null&&index!=="null"?db.despesas[index]:null;
   await ajustarSaldoPorTransacao('despesa',novaObj,transacaoAnterior);
   if(index===null||index==="null") db.despesas.push(novaObj); else db.despesas[index]=novaObj; 
-  await persist("despesas"); 
-  await persist("contas");
   closeModal(); 
-  renderListaDespesas();
-  atualizarDashboardGlobal();
-  mostrarToast("✓ Despesa salva com sucesso!");
+  await aposAlterarFinanceiro('despesas');
+  mostrarToast("✓ Despesa salva com sucesso! Dashboard atualizado.");
 }
 
 function renderListaDespesas(){
-  let meses=[...new Set(db.despesas.map(d=>d.vencimento?.slice(5,7)+"/"+d.vencimento?.slice(2,4)))];
-  conteudo.innerHTML=`<h2>Minhas Despesas</h2><button class="btn-secondary" onclick="renderDespesas()">Voltar</button><button class="btn-primary" onclick="renderFormDespesa()">+ Despesa</button><hr><div style="display:flex;gap:14px;flex-wrap:wrap"><div style="flex:1"><label>Mês</label><select id="fMes" onchange="filtrarDespesas()"><option>Todas</option>${meses.map(m=>`<option>${m}</option>`).join("")}</select></div><div style="flex:1"><label>Conta</label><select id="fConta" onchange="filtrarDespesas()"><option>Todas</option>${db.contas.map(c=>`<option>${c.nome}</option>`).join("")}</select></div><div style="flex:1"><label>Situação</label><select id="fSituacao" onchange="filtrarDespesas()"><option>Todas</option><option>A pagar</option><option>Pendente</option><option>Pago</option></select></div></div><div id="tabelaDespesas"></div>`;
+  let meses=[...new Set(db.despesas.map(d=>d.vencimento? d.vencimento.slice(5,7)+"/"+d.vencimento.slice(2,4) : "").filter(Boolean))]
+    .sort((a,b)=>{ const [ma,aa]=a.split('/'); const [mb,ab]=b.split('/'); return ("20"+ab+mb).localeCompare("20"+aa+ma); });
+  conteudo.innerHTML=`<h2>Minhas Despesas</h2><button class="btn-secondary" onclick="renderDespesas()">Voltar</button><button class="btn-primary" onclick="renderFormDespesa()">+ Despesa</button><hr><div style="display:flex;gap:14px;flex-wrap:wrap"><div style="flex:1;min-width:220px"><label>Buscar fornecedor/vendedor</label><input id="fBuscaFornecedor" placeholder="Digite o nome..." oninput="filtrarDespesas()"></div><div style="flex:1"><label>Mês</label><select id="fMes" onchange="filtrarDespesas()"><option>Todas</option>${meses.map(m=>`<option>${m}</option>`).join("")}</select></div><div style="flex:1"><label>Conta</label><select id="fConta" onchange="filtrarDespesas()"><option>Todas</option>${db.contas.map(c=>`<option>${c.nome}</option>`).join("")}</select></div><div style="flex:1"><label>Situação</label><select id="fSituacao" onchange="filtrarDespesas()"><option>Todas</option><option>A pagar</option><option>Pendente</option><option>Pago</option></select></div></div><div id="tabelaDespesas"></div>`;
   filtrarDespesas();
 }
 
 function filtrarDespesas(){
-  const hoje=new Date(),mes=fMes?.value||"Todas",conta=fConta?.value||"Todas",sit=fSituacao?.value||"Todas";
+  const hoje=new Date(),mes=fMes?.value||"Todas",conta=fConta?.value||"Todas",sit=fSituacao?.value||"Todas",busca=(fBuscaFornecedor?.value||"").toLowerCase().trim();
   let html=`<table><tr><th>Vencimento</th><th>Fornecedor</th><th>Conta</th><th>Grupo</th><th>Subgrupo</th><th>Valor</th><th>Situação</th><th>Ações</th></tr>`;
-  db.despesas.forEach((d,i)=>{ let s=d.situacao; if(s!=="Pago"&&new Date(d.vencimento)<hoje) s="Pendente"; let dm=d.vencimento.slice(5,7)+"/"+d.vencimento.slice(2,4); if((mes==="Todas"||dm===mes)&&(conta==="Todas"||d.conta===conta)&&(sit==="Todas"||s===sit)) html+=`<tr><td>${d.vencimento}</td><td>${d.fornecedor}</td><td>${d.conta}</td><td>${d.grupo}</td><td>${d.subgrupo}</td><td>${moedaBR(numeroBR(d.valor))}</td><td>${s}</td><td><button class="btn-primary" onclick="renderFormDespesa(${i})">Editar</button><button class="btn-secondary" onclick="baixarDespesa(${i})">Baixa</button><button class="btn-danger" onclick="excluirDespesa(${i})">Excluir</button></td></tr>`; });
+  const lista = db.despesas
+    .map((d,i)=>({d,i}))
+    .sort((a,b)=> new Date((b.d.vencimento||'1900-01-01')+"T00:00:00") - new Date((a.d.vencimento||'1900-01-01')+"T00:00:00"));
+  lista.forEach(({d,i})=>{ 
+    let s=d.situacao; 
+    if(s!=="Pago"&&d.vencimento&&new Date(d.vencimento+"T00:00:00")<hoje) s="Pendente"; 
+    let dm=d.vencimento?d.vencimento.slice(5,7)+"/"+d.vencimento.slice(2,4):""; 
+    const nomeFornecedor=(d.fornecedor||"").toLowerCase();
+    if((mes==="Todas"||dm===mes)&&(conta==="Todas"||d.conta===conta)&&(sit==="Todas"||s===sit)&&(!busca||nomeFornecedor.includes(busca))) html+=`<tr><td>${d.vencimento||''}</td><td>${d.fornecedor||''}</td><td>${d.conta||''}</td><td>${d.grupo||''}</td><td>${d.subgrupo||''}</td><td>${moedaBR(numeroBR(d.valor))}</td><td>${s}</td><td><button class="btn-primary" onclick="renderFormDespesa(${i})">Editar</button><button class="btn-secondary" onclick="baixarDespesa(${i})">Baixa</button><button class="btn-danger" onclick="excluirDespesa(${i})">Excluir</button></td></tr>`; 
+  });
   html+="</table>"; tabelaDespesas.innerHTML=html;
 }
 
 function baixarDespesa(i){ const d=db.despesas[i]; openModal(`<h3>Baixar Despesa</h3><table><tr><th>Vencimento</th><th>Data pagamento</th><th>Valor pago</th></tr><tr><td>${d.vencimento}</td><td><input type="date" id="dataPgto"></td><td><input id="valorPgto" data-moeda="br" value="${moedaBR(numeroBR(d.valor))}"></td></tr></table><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Fechar</button><button class="btn-primary" onclick="confirmarBaixa(${i})">Baixar</button></div>`); }
 async function confirmarBaixa(i){ 
   if(numeroBR(valorPgto.value)!==numeroBR(db.despesas[i].valor)){ alert("Valor deve ser igual ao da despesa"); return; } 
-  const despesa=db.despesas[i]; 
-  const contaNome=despesa.conta; 
-  const contaIndex=db.contas.findIndex(c=>c.nome===contaNome); 
-  if(contaIndex===-1){ alert("Conta não encontrada"); return; } 
-  const valorDespesa=numeroBR(despesa.valor); 
-  const saldoAtual=numeroBR(db.contas[contaIndex].saldo); 
-  db.contas[contaIndex].saldo=saldoAtual-valorDespesa; 
-  despesa.situacao="Pago"; 
-  despesa.dataPagamento=dataPgto.value; 
-  await persist("contas"); 
-  await persist("despesas"); 
-  mostrarToast("✓ Despesa baixada! Caixa atualizado para "+moedaBR(db.contas[contaIndex].saldo)); 
+  db.despesas[i]={...db.despesas[i],situacao:"Pago",dataPagamento:dataPgto.value,atualizadoEm:new Date().toISOString()};
   closeModal(); 
-  filtrarDespesas();
-  atualizarDashboardGlobal();
+  await aposAlterarFinanceiro('despesas');
+  mostrarToast("✓ Despesa baixada! Caixa e dashboard atualizados."); 
 }
 async function excluirDespesa(i){ 
-  const despesa=db.despesas[i];
-  if(despesa.situacao==="Pago"||despesa.situacao==="Recebido"){
-    const contaIndex=db.contas.findIndex(c=>c.nome===despesa.conta);
-    if(contaIndex!==-1){
-      const valor=numeroBR(despesa.valor);
-      db.contas[contaIndex].saldo=(numeroBR(db.contas[contaIndex].saldo))+valor;
-      await persist("contas");
-    }
-  }
+  if(!confirm('Deseja excluir esta despesa?')) return;
   db.despesas.splice(i,1); 
-  await persist("despesas"); 
-  filtrarDespesas();
-  atualizarDashboardGlobal();
-  mostrarToast("✓ Despesa excluída com sucesso!");
+  await aposAlterarFinanceiro('despesas');
+  mostrarToast("✓ Despesa excluída! Caixa e dashboard atualizados.");
 }
+
 
 function renderGrupoSubgrupo(et=null,idx=null,si=null){
   let title="Grupo / Subgrupo Despesas",gv="",sv="",gp=0;
@@ -1469,29 +1521,30 @@ async function saveReceita(identificador=null){
       db.receitas.push(novaObj);
     }
   }
-  recalcularSaldosContas();
-  await persist("receitas"); 
-  await persist("contas");
   closeModal(); 
-  renderListaReceitas();
-  atualizarDashboardGlobal();
-  mostrarToast("✓ Receita salva com sucesso!");
+  await aposAlterarFinanceiro('receitas');
+  mostrarToast("✓ Receita salva com sucesso! Dashboard atualizado.");
 }
 
 function renderListaReceitas(){
-  let meses=[...new Set(db.receitas.map(r=>r.vencimento? r.vencimento.slice(5,7)+"/"+r.vencimento.slice(2,4) : "").filter(Boolean))];
-  conteudo.innerHTML=`<h2>Minhas Receitas</h2><button class="btn-secondary" onclick="renderReceitas()">Voltar</button><button class="btn-primary" onclick="renderFormReceita()">+ Receita</button><hr><div style="display:flex;gap:14px;flex-wrap:wrap"><div style="flex:1"><label>Mês</label><select id="fMes" onchange="filtrarReceitas()"><option>Todas</option>${meses.map(m=>`<option>${m}</option>`).join("")}</select></div><div style="flex:1"><label>Conta</label><select id="fConta" onchange="filtrarReceitas()"><option>Todas</option>${db.contas.map(c=>`<option>${c.nome}</option>`).join("")}</select></div><div style="flex:1"><label>Situação</label><select id="fSituacao" onchange="filtrarReceitas()"><option>Todas</option><option>A receber</option><option>Pendente</option><option>Recebido</option></select></div></div><div id="tabelaReceitas"></div>`;
+  let meses=[...new Set(db.receitas.map(r=>r.vencimento? r.vencimento.slice(5,7)+"/"+r.vencimento.slice(2,4) : "").filter(Boolean))]
+    .sort((a,b)=>{ const [ma,aa]=a.split('/'); const [mb,ab]=b.split('/'); return ("20"+ab+mb).localeCompare("20"+aa+ma); });
+  conteudo.innerHTML=`<h2>Minhas Receitas</h2><button class="btn-secondary" onclick="renderReceitas()">Voltar</button><button class="btn-primary" onclick="renderFormReceita()">+ Receita</button><hr><div style="display:flex;gap:14px;flex-wrap:wrap"><div style="flex:1;min-width:220px"><label>Buscar cliente</label><input id="fBuscaCliente" placeholder="Digite o nome..." oninput="filtrarReceitas()"></div><div style="flex:1"><label>Mês</label><select id="fMes" onchange="filtrarReceitas()"><option>Todas</option>${meses.map(m=>`<option>${m}</option>`).join("")}</select></div><div style="flex:1"><label>Conta</label><select id="fConta" onchange="filtrarReceitas()"><option>Todas</option>${db.contas.map(c=>`<option>${c.nome}</option>`).join("")}</select></div><div style="flex:1"><label>Situação</label><select id="fSituacao" onchange="filtrarReceitas()"><option>Todas</option><option>A receber</option><option>Pendente</option><option>Recebido</option></select></div></div><div id="tabelaReceitas"></div>`;
   filtrarReceitas();
 }
 
 function filtrarReceitas(){
-  const hoje=new Date(),mes=fMes?.value||"Todas",conta=fConta?.value||"Todas",sit=fSituacao?.value||"Todas";
+  const hoje=new Date(),mes=fMes?.value||"Todas",conta=fConta?.value||"Todas",sit=fSituacao?.value||"Todas",busca=(fBuscaCliente?.value||"").toLowerCase().trim();
   let html=`<table><tr><th>Data venda</th><th>Vencimento</th><th>Tipo</th><th>Parcela</th><th>Cliente</th><th>Vendedor</th><th>Conta</th><th>Grupo</th><th>Subgrupo</th><th>Valor</th><th>Situação</th><th>Ações</th></tr>`;
-  db.receitas.forEach((r,i)=>{
+  const lista = db.receitas
+    .map((r,i)=>({r,i}))
+    .sort((a,b)=> new Date((b.r.vencimento||b.r.dataVenda||'1900-01-01')+"T00:00:00") - new Date((a.r.vencimento||a.r.dataVenda||'1900-01-01')+"T00:00:00"));
+  lista.forEach(({r,i})=>{
     let s=r.situacao;
     if(s!=="Recebido"&&r.vencimento&&new Date(r.vencimento+"T00:00:00")<hoje) s="Pendente";
     let rm=r.vencimento?r.vencimento.slice(5,7)+"/"+r.vencimento.slice(2,4):"";
-    if((mes==="Todas"||rm===mes)&&(conta==="Todas"||r.conta===conta)&&(sit==="Todas"||s===sit)){
+    const nomeCliente=(r.cliente||"").toLowerCase();
+    if((mes==="Todas"||rm===mes)&&(conta==="Todas"||r.conta===conta)&&(sit==="Todas"||s===sit)&&(!busca||nomeCliente.includes(busca))){
       const tipoLabel=(r.tipoVenda||'avista')==='prazo'?'A prazo':'À vista';
       const parcelaLabel=(r.tipoVenda||'avista')==='prazo'?`${r.parcelaAtual||1}/${r.qtdParcelas||1}`:'-';
       html+=`<tr><td>${r.dataVenda||r.vencimento||''}</td><td>${r.vencimento||''}</td><td>${tipoLabel}</td><td>${parcelaLabel}</td><td>${r.cliente||''}</td><td>${r.vendedor||"-"}</td><td>${r.conta||''}</td><td>${r.grupo||''}</td><td>${r.subgrupo||''}</td><td>${moedaBR(numeroBR(r.valor))}</td><td>${s}</td><td><button class="btn-primary" onclick="renderFormReceita('${escaparJSReceita(r.id)}')">Editar</button><button class="btn-secondary" onclick="baixarReceita(${i})">Baixa</button><button class="btn-danger" onclick="excluirReceita(${i})">Excluir</button></td></tr>`;
@@ -1507,23 +1560,17 @@ async function confirmarBaixaReceita(i){
   const novaReceita={...db.receitas[i],situacao:"Recebido",dataRecebimento:dataReceb.value,atualizadoEm:new Date().toISOString()};
   await ajustarSaldoPorTransacao('receita',novaReceita,receitaAnterior);
   db.receitas[i]=novaReceita;
-  recalcularSaldosContas();
-  await persist("contas"); 
-  await persist("receitas"); 
-  mostrarToast("✓ Receita baixada! Caixa e comissão atualizados"); 
   closeModal(); 
-  filtrarReceitas();
-  atualizarDashboardGlobal();
+  await aposAlterarFinanceiro('receitas');
+  mostrarToast("✓ Receita baixada! Caixa, comissão e dashboard atualizados."); 
 }
 async function excluirReceita(i){ 
+  if(!confirm('Deseja excluir esta receita?')) return;
   db.receitas.splice(i,1); 
-  recalcularSaldosContas();
-  await persist("contas");
-  await persist("receitas"); 
-  filtrarReceitas();
-  atualizarDashboardGlobal();
-  mostrarToast("✓ Receita excluída com sucesso!");
+  await aposAlterarFinanceiro('receitas');
+  mostrarToast("✓ Receita excluída! Caixa e dashboard atualizados.");
 }
+
 
 function renderGrupoSubgrupoReceita(et=null,idx=null,si=null){
   let title="Grupo / Subgrupo Receitas",gv="",sv="",gp=0;
@@ -1568,6 +1615,16 @@ window.addEventListener('load', function(){
     }
   }, 3000);
 });
+</script>
+
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./service-worker.js')
+      .then(() => console.log('✅ PWA ativo: service worker registrado'))
+      .catch(err => console.warn('⚠️ Service worker não registrado:', err));
+  });
+}
 </script>
 </body>
 </html>
