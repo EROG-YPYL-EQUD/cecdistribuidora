@@ -1177,8 +1177,7 @@ function renderDashFluxo(){
 }
 
 function initCharts(recs,dess,rent){
-  // Sempre destrói gráficos antigos antes de recriar.
-  // Isso evita o erro do Chart.js quando o dashboard é atualizado depois de salvar receita/despesa.
+  // Recria os gráficos sempre que o dashboard muda.
   if(chartEvolucaoFinanceira){ try{ chartEvolucaoFinanceira.destroy(); }catch(e){} chartEvolucaoFinanceira=null; }
   if(chartExecutiveScore){ try{ chartExecutiveScore.destroy(); }catch(e){} chartExecutiveScore=null; }
 
@@ -1186,52 +1185,116 @@ function initCharts(recs,dess,rent){
   const canvasScore=document.getElementById('chartScore');
   if(!canvasLucro || !canvasScore || typeof Chart === 'undefined') return;
 
-  let meses={};
-  const mesAno=(data)=>{
-    if(!data || typeof data !== 'string' || data.length < 7) return '';
-    return data.slice(0,7);
+  // Garante altura real para o Chart.js em todos os filtros.
+  canvasLucro.style.height='300px';
+  canvasLucro.parentElement.style.minHeight='340px';
+
+  const hoje=new Date();
+  const pad2=n=>String(n).padStart(2,'0');
+  const isoDia=d=>`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+  const isoMes=d=>`${d.getFullYear()}-${pad2(d.getMonth()+1)}`;
+  const addDia=(d,q=1)=>{ const x=new Date(d); x.setDate(x.getDate()+q); return x; };
+  const addMes=(d,q=1)=>{ const x=new Date(d); x.setMonth(x.getMonth()+q); return x; };
+  const parseData=ds=>{
+    if(!ds || typeof ds!=='string') return null;
+    const p=ds.slice(0,10).split('-');
+    if(p.length<3) return null;
+    return new Date(Number(p[0]), Number(p[1])-1, Number(p[2]));
   };
+  const dataReceita=r=>r.vencimento || r.dataVenda || r.data || '';
+
+  let modo='mensal';
+  let labels=[];
+
+  function preencherDias(inicio,fim){
+    modo='diario'; labels=[];
+    for(let d=new Date(inicio); d<=fim; d=addDia(d,1)) labels.push(isoDia(d));
+  }
+  function preencherMeses(inicio,fim){
+    modo='mensal'; labels=[];
+    const ini=new Date(inicio.getFullYear(), inicio.getMonth(), 1);
+    const end=new Date(fim.getFullYear(), fim.getMonth(), 1);
+    for(let d=ini; d<=end; d=addMes(d,1)) labels.push(isoMes(d));
+  }
+
+  if(filtroPeriodo==='mes_atual'){
+    const ini=new Date(hoje.getFullYear(),hoje.getMonth(),1);
+    const fim=new Date(hoje.getFullYear(),hoje.getMonth()+1,0);
+    preencherDias(ini,fim);
+  }else if(filtroPeriodo==='mes_anterior'){
+    const ini=new Date(hoje.getFullYear(),hoje.getMonth()-1,1);
+    const fim=new Date(hoje.getFullYear(),hoje.getMonth(),0);
+    preencherDias(ini,fim);
+  }else if(filtroPeriodo==='trimestre'){
+    preencherMeses(new Date(hoje.getFullYear(),hoje.getMonth()-2,1), new Date(hoje.getFullYear(),hoje.getMonth()+1,0));
+  }else if(filtroPeriodo==='semestre'){
+    preencherMeses(new Date(hoje.getFullYear(),hoje.getMonth()-5,1), new Date(hoje.getFullYear(),hoje.getMonth()+1,0));
+  }else if(filtroPeriodo==='ano'){
+    preencherMeses(new Date(hoje.getFullYear(),0,1), new Date(hoje.getFullYear(),11,31));
+  }else if(filtroPeriodo==='comparacao'){
+    modo='mensal';
+    labels=(mesesSelecionados&&mesesSelecionados.length?mesesSelecionados:[]).slice().sort();
+  }else if(filtroPeriodo==='custom' && dataInicioCustom && dataFimCustom){
+    const ini=parseData(dataInicioCustom), fim=parseData(dataFimCustom);
+    const dias=ini&&fim ? Math.round((fim-ini)/86400000) : 999;
+    if(ini&&fim&&dias<=62) preencherDias(ini,fim); else if(ini&&fim) preencherMeses(ini,fim);
+  }
+
+  // Em "Tudo" ou se não houver labels montadas, usa todos os meses que possuem dados.
+  if(labels.length===0){
+    const set=new Set();
+    (recs||[]).forEach(r=>{ const ds=dataReceita(r); if(ds&&ds.length>=7) set.add(ds.slice(0,7)); });
+    (dess||[]).forEach(d=>{ const ds=d.vencimento; if(ds&&ds.length>=7) set.add(ds.slice(0,7)); });
+    labels=[...set].sort();
+    modo='mensal';
+  }
+
+  // Se ainda assim não tiver dados, mostra o mês atual zerado para não deixar o gráfico branco.
+  if(labels.length===0){ labels=[isoMes(hoje)]; modo='mensal'; }
+
+  const mapa={};
+  labels.forEach(k=>mapa[k]={r:0,d:0});
+  const chave=(ds)=> modo==='diario' ? (ds||'').slice(0,10) : (ds||'').slice(0,7);
 
   (recs||[]).forEach(r=>{
-    const ma=mesAno(r.vencimento || r.dataVenda);
-    if(!ma) return;
-    if(!meses[ma]) meses[ma]={r:0,d:0};
-    meses[ma].r += numeroBR(r.valor);
+    const k=chave(dataReceita(r));
+    if(!mapa[k]) mapa[k]={r:0,d:0};
+    mapa[k].r += numeroBR(r.valor);
   });
-
   (dess||[]).forEach(d=>{
-    const ma=mesAno(d.vencimento);
-    if(!ma) return;
-    if(!meses[ma]) meses[ma]={r:0,d:0};
-    meses[ma].d += numeroBR(d.valor);
+    const k=chave(d.vencimento);
+    if(!mapa[k]) mapa[k]={r:0,d:0};
+    mapa[k].d += numeroBR(d.valor);
   });
 
-  let labels=Object.keys(meses).sort();
-
-  // Se não houver dados no filtro atual, mostra o mês atual zerado em vez de deixar o gráfico quebrado/branco.
-  if(labels.length===0){
-    const hoje=new Date();
-    const ma=hoje.toISOString().slice(0,7);
-    meses[ma]={r:0,d:0};
-    labels=[ma];
-  }
+  // Mantém só o intervalo do filtro, mas aceita dados que caírem nele.
+  labels=labels.filter(k=>mapa[k]).sort();
+  const labelTela=k=>{
+    if(modo==='diario'){
+      const [a,m,d]=k.split('-'); return `${d}/${m}`;
+    }
+    const [a,m]=k.split('-'); return `${m}/${a}`;
+  };
 
   chartEvolucaoFinanceira = new Chart(canvasLucro.getContext('2d'),{
     type:'line',
     data:{
-      labels:labels.map(l=>l.split('-').reverse().join('/')),
+      labels:labels.map(labelTela),
       datasets:[
-        {label:'Receita',data:labels.map(l=>meses[l].r),borderColor:'#22c55e',backgroundColor:'rgba(34,197,94,.12)',tension:.4,fill:true},
-        {label:'Despesa',data:labels.map(l=>meses[l].d),borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.10)',tension:.4,fill:true}
+        {label:'Receita',data:labels.map(l=>mapa[l].r),borderColor:'#22c55e',backgroundColor:'rgba(34,197,94,.12)',tension:.35,fill:true,pointRadius:4,pointHoverRadius:6},
+        {label:'Despesa',data:labels.map(l=>mapa[l].d),borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.10)',tension:.35,fill:true,pointRadius:4,pointHoverRadius:6}
       ]
     },
     options:{
       responsive:true,
       maintainAspectRatio:false,
-      plugins:{legend:{labels:{color:'#94a3b8'}}},
+      plugins:{
+        legend:{labels:{color:'#94a3b8'}},
+        tooltip:{callbacks:{label:(ctx)=>`${ctx.dataset.label}: ${moedaBR(ctx.parsed.y)}`}}
+      },
       scales:{
-        y:{grid:{color:'#1e293b'},ticks:{color:'#94a3b8',callback:(v)=>moedaBR(v)}},
-        x:{grid:{display:false},ticks:{color:'#94a3b8'}}
+        y:{beginAtZero:true,grid:{color:'#1e293b'},ticks:{color:'#94a3b8',callback:(v)=>moedaBR(v)}},
+        x:{grid:{display:false},ticks:{color:'#94a3b8',maxRotation:45,minRotation:0}}
       }
     }
   });
