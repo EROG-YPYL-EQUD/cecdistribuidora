@@ -78,6 +78,20 @@
 
     if (user) {
       window._uid = user.uid;
+
+      // Se o navegador restaurou uma sessão antiga após a página ter ficado fechada,
+      // respeita a última atividade persistida e exige novo login após 15 minutos.
+      if (typeof window.sessaoExpiradaPorInatividade === 'function' && window.sessaoExpiradaPorInatividade(user.uid)) {
+        try { window.limparMetadadosSessao?.(); } catch(e) {}
+        try { await auth.signOut(); } catch(e) { console.error(e); }
+        const login = document.getElementById('login-screen');
+        const app = document.getElementById('main-app');
+        if (login) login.style.display = 'flex';
+        if (app) app.style.display = 'none';
+        window.esconderCarregando?.();
+        return;
+      }
+
       window.mostrarCarregando?.('Carregando dados do Firebase...');
       try {
         await window.carregarDadosFirebase();
@@ -87,7 +101,7 @@
         if (app) app.style.display = 'block';
         window.atualizarSaudacaoGlobal?.();
         window.mudarAba?.('dashboard');
-        window.reiniciarTimersInatividade?.();
+        window.iniciarSessaoInatividade?.(user.uid);
       } catch (err) {
         console.error('Erro ao abrir sistema:', err);
         try { await auth.signOut(); } catch(e) { console.error(e); }

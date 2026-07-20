@@ -1,4 +1,4 @@
-const CACHE_NAME = 'erp-financeiro-pwa-v6-login-compat';
+const CACHE_NAME = 'erp-financeiro-pwa-v7-session-15min';
 const APP_SHELL = [
   './',
   './index.html',

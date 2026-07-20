@@ -376,6 +376,8 @@ async function realizarLogin(){
 
 async function realizarLogout(){
   try {
+    limparMetadadosSessao();
+    pararTimersInatividade();
     await window._signOutFn(window._auth);
     document.getElementById('login-pass').value='';
     document.getElementById('login-error').style.display='none';
@@ -386,35 +388,134 @@ async function realizarLogout(){
 
 /* ================================================================
    SESSÃO — LOGOUT AUTOMÁTICO POR INATIVIDADE
+   - 15 minutos sem atividade com a página aberta.
+   - Persiste somente metadados de sessão (UID + última atividade), nunca dados do sistema.
+   - Ao reabrir/retomar a página, encerra imediatamente se o prazo já expirou.
 ================================================================ */
-const TEMPO_INATIVIDADE_MS = 30 * 60 * 1000;
-const TEMPO_AVISO_MS = 28 * 60 * 1000;
+const TEMPO_INATIVIDADE_MS = 15 * 60 * 1000;
+const TEMPO_AVISO_MS = 13 * 60 * 1000;
+const CHAVE_ULTIMA_ATIVIDADE = 'cec_session_last_activity';
+const CHAVE_UID_SESSAO = 'cec_session_uid';
 let timerInatividade = null;
 let timerAvisoInatividade = null;
 let avisoInatividadeExibido = false;
+let ultimoRegistroAtividade = 0;
 
 function sessaoEstaLogada(){
   return !!(window._auth && window._auth.currentUser);
 }
 
-function reiniciarTimersInatividade(){
+function lerUltimaAtividadeSessao(){
+  try {
+    const valor = Number(localStorage.getItem(CHAVE_ULTIMA_ATIVIDADE) || 0);
+    return Number.isFinite(valor) ? valor : 0;
+  } catch(e){
+    return Number(window.__ultimaAtividadeSessao || 0);
+  }
+}
+
+function lerUidSessao(){
+  try { return localStorage.getItem(CHAVE_UID_SESSAO) || ''; }
+  catch(e){ return String(window.__uidSessao || ''); }
+}
+
+function gravarUltimaAtividadeSessao(agora = Date.now(), forcar = false){
+  if(!sessaoEstaLogada()) return;
+  const uid = window._auth.currentUser?.uid;
+  if(!uid) return;
+
+  // Evita escrita excessiva em eventos como mousemove, sem perder precisão relevante.
+  if(!forcar && agora - ultimoRegistroAtividade < 5000) return;
+  ultimoRegistroAtividade = agora;
+  window.__ultimaAtividadeSessao = agora;
+  window.__uidSessao = uid;
+  try {
+    localStorage.setItem(CHAVE_ULTIMA_ATIVIDADE, String(agora));
+    localStorage.setItem(CHAVE_UID_SESSAO, uid);
+  } catch(e){ /* metadados permanecem em memória nesta execução */ }
+}
+
+function limparMetadadosSessao(){
+  ultimoRegistroAtividade = 0;
+  window.__ultimaAtividadeSessao = 0;
+  window.__uidSessao = '';
+  try {
+    localStorage.removeItem(CHAVE_ULTIMA_ATIVIDADE);
+    localStorage.removeItem(CHAVE_UID_SESSAO);
+  } catch(e){}
+}
+
+function sessaoExpiradaPorInatividade(uidAtual){
+  const ultima = lerUltimaAtividadeSessao();
+  const uidSalvo = lerUidSessao();
+  if(!ultima || !uidSalvo || uidSalvo !== uidAtual) return false;
+  return (Date.now() - ultima) >= TEMPO_INATIVIDADE_MS;
+}
+
+async function encerrarSessaoPorInatividade(){
+  if(!sessaoEstaLogada()) return;
+  try {
+    pararTimersInatividade();
+    limparMetadadosSessao();
+    await realizarLogout();
+    mostrarToast('Sessão encerrada automaticamente por 15 minutos de inatividade.');
+  } catch(e){ console.error('Erro no logout automático:', e); }
+}
+
+function agendarTimersComBaseNaUltimaAtividade(){
   if(!sessaoEstaLogada()) return;
   clearTimeout(timerInatividade);
   clearTimeout(timerAvisoInatividade);
   avisoInatividadeExibido = false;
-  timerAvisoInatividade = setTimeout(()=>{
-    if(sessaoEstaLogada()){
-      avisoInatividadeExibido = true;
-      mostrarToast('Sua sessão será encerrada em 2 minutos por inatividade.');
-    }
-  }, TEMPO_AVISO_MS);
-  timerInatividade = setTimeout(async ()=>{
+
+  const agora = Date.now();
+  const ultima = lerUltimaAtividadeSessao() || agora;
+  const decorrido = Math.max(0, agora - ultima);
+  const restanteLogout = TEMPO_INATIVIDADE_MS - decorrido;
+  const restanteAviso = TEMPO_AVISO_MS - decorrido;
+
+  if(restanteLogout <= 0){
+    encerrarSessaoPorInatividade();
+    return;
+  }
+
+  if(restanteAviso > 0){
+    timerAvisoInatividade = setTimeout(()=>{
+      if(sessaoEstaLogada()){
+        avisoInatividadeExibido = true;
+        mostrarToast('Sua sessão será encerrada em 2 minutos por inatividade.');
+      }
+    }, restanteAviso);
+  }
+
+  timerInatividade = setTimeout(()=>{
     if(!sessaoEstaLogada()) return;
-    try {
-      await realizarLogout();
-      mostrarToast('Sessão encerrada automaticamente por 30 minutos de inatividade.');
-    } catch(e){ console.error('Erro no logout automático:', e); }
-  }, TEMPO_INATIVIDADE_MS);
+    // Confere o relógio real; não confia apenas no timer do navegador.
+    const ultimaReal = lerUltimaAtividadeSessao();
+    if(ultimaReal && Date.now() - ultimaReal >= TEMPO_INATIVIDADE_MS){
+      encerrarSessaoPorInatividade();
+    } else {
+      agendarTimersComBaseNaUltimaAtividade();
+    }
+  }, restanteLogout);
+}
+
+function reiniciarTimersInatividade(){
+  if(!sessaoEstaLogada()) return;
+  gravarUltimaAtividadeSessao(Date.now());
+  agendarTimersComBaseNaUltimaAtividade();
+}
+
+function iniciarSessaoInatividade(uid){
+  if(!uid || !sessaoEstaLogada()) return;
+  const uidSalvo = lerUidSessao();
+  const ultima = lerUltimaAtividadeSessao();
+
+  // Sessão nova ou outro usuário: começa a contagem agora.
+  if(!uidSalvo || uidSalvo !== uid || !ultima){
+    gravarUltimaAtividadeSessao(Date.now(), true);
+  }
+  agendarTimersComBaseNaUltimaAtividade();
 }
 
 function pararTimersInatividade(){
@@ -422,10 +523,32 @@ function pararTimersInatividade(){
   clearTimeout(timerAvisoInatividade);
   timerInatividade = null;
   timerAvisoInatividade = null;
+  avisoInatividadeExibido = false;
+}
+
+function registrarAtividadeUsuario(){
+  if(!sessaoEstaLogada()) return;
+  gravarUltimaAtividadeSessao(Date.now());
+  agendarTimersComBaseNaUltimaAtividade();
 }
 
 ['mousedown','mousemove','keydown','touchstart','scroll','click'].forEach(evento=>{
-  document.addEventListener(evento, reiniciarTimersInatividade, {passive:true});
+  document.addEventListener(evento, registrarAtividadeUsuario, {passive:true});
+});
+
+// Ao voltar para a aba/janela, verifica tempo real decorrido mesmo que timers tenham sido suspensos.
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState === 'visible' && sessaoEstaLogada()){
+    const uid = window._auth.currentUser?.uid;
+    if(uid && sessaoExpiradaPorInatividade(uid)) encerrarSessaoPorInatividade();
+    else agendarTimersComBaseNaUltimaAtividade();
+  }
+});
+window.addEventListener('focus', ()=>{
+  if(!sessaoEstaLogada()) return;
+  const uid = window._auth.currentUser?.uid;
+  if(uid && sessaoExpiradaPorInatividade(uid)) encerrarSessaoPorInatividade();
+  else agendarTimersComBaseNaUltimaAtividade();
 });
 
 /* ================================================================
