@@ -1,0 +1,19 @@
+ESTRUTURA DO PROJETO
+
+index.html                      Estrutura principal da interface
+css/styles.css                  Estilos visuais
+js/firebase.js                  Inicialização Firebase, autenticação e monitor de sessão
+js/core.js                      Estado, persistência, utilitários, login/logout, navegação e backup
+js/dashboard.js                 Dashboards, indicadores e relatórios
+js/gestao.js                    CRUD de contas, clientes, fornecedores e vendedores
+js/despesas.js                  Despesas, grupos e subgrupos de despesas
+js/receitas.js                  Receitas, baixas, grupos e subgrupos de receitas
+js/bootstrap.js                 Inicialização segura da tela de login
+js/session-fallback.js          Proteção visual caso a inicialização falhe
+js/service-worker-register.js   Registro do PWA/service worker
+service-worker.js               Cache e funcionamento PWA
+manifest.json                   Manifesto PWA preservado
+icon-192.png / icon-512.png     Ícones preservados
+firebase-rules-recomendadas.json Regras recomendadas, não publicadas automaticamente
+
+A lógica foi extraída mantendo os mesmos nomes de funções e a mesma ordem de carregamento do projeto original.

@@ -4,9 +4,44 @@
       "$uid": {
         ".read": "auth != null && auth.uid === $uid",
         ".write": "auth != null && auth.uid === $uid",
-        "$other": {
-          ".validate": "$other === 'contas' || $other === 'clientes' || $other === 'fornecedores' || $other === 'vendedores' || $other === 'despesas' || $other === 'gruposDespesas' || $other === 'subgruposDespesas' || $other === 'receitas' || $other === 'gruposReceitas' || $other === 'subgruposReceitas' || $other === 'empresa'"
-        }
+        "contas": {
+          "$id": {
+            ".validate": "!newData.exists() || (newData.hasChildren(['nome']) && newData.child('nome').isString() && newData.child('nome').val().length > 0 && newData.child('nome').val().length <= 150 && (!newData.child('saldo').exists() || newData.child('saldo').isNumber()) && (!newData.child('saldoInicial').exists() || newData.child('saldoInicial').isNumber()))"
+          }
+        },
+        "clientes": {
+          "$id": {
+            ".validate": "!newData.exists() || (newData.hasChildren(['nome']) && newData.child('nome').isString() && newData.child('nome').val().length > 0 && newData.child('nome').val().length <= 200 && (!newData.child('telefone').exists() || newData.child('telefone').isString()))"
+          }
+        },
+        "fornecedores": {
+          "$id": {
+            ".validate": "!newData.exists() || (newData.hasChildren(['nome']) && newData.child('nome').isString() && newData.child('nome').val().length > 0 && newData.child('nome').val().length <= 200)"
+          }
+        },
+        "vendedores": {
+          "$id": {
+            ".validate": "!newData.exists() || (newData.hasChildren(['nome']) && newData.child('nome').isString() && newData.child('nome').val().length > 0 && newData.child('nome').val().length <= 200 && (!newData.child('comissao').exists() || newData.child('comissao').isNumber()) && (!newData.child('meta').exists() || newData.child('meta').isNumber()))"
+          }
+        },
+        "receitas": {
+          "$id": {
+            ".validate": "!newData.exists() || (newData.child('valor').isNumber() && newData.child('valor').val() >= 0 && newData.child('situacao').isString() && (newData.child('situacao').val() === 'A receber' || newData.child('situacao').val() === 'Recebido' || newData.child('situacao').val() === 'Pendente') && (!newData.child('cliente').exists() || newData.child('cliente').isString()) && (!newData.child('conta').exists() || newData.child('conta').isString()))"
+          }
+        },
+        "despesas": {
+          "$id": {
+            ".validate": "!newData.exists() || (newData.child('valor').isNumber() && newData.child('valor').val() >= 0 && newData.child('situacao').isString() && (newData.child('situacao').val() === 'A pagar' || newData.child('situacao').val() === 'Pago' || newData.child('situacao').val() === 'Pendente') && (!newData.child('fornecedor').exists() || newData.child('fornecedor').isString()) && (!newData.child('conta').exists() || newData.child('conta').isString()))"
+          }
+        },
+        "gruposDespesas": { "$id": { ".validate": "!newData.exists() || newData.isString()" } },
+        "subgruposDespesas": { "$id": { ".validate": "!newData.exists() || (newData.child('grupo').isString() && newData.child('nome').isString())" } },
+        "gruposReceitas": { "$id": { ".validate": "!newData.exists() || newData.isString()" } },
+        "subgruposReceitas": { "$id": { ".validate": "!newData.exists() || (newData.child('grupo').isString() && newData.child('nome').isString())" } },
+        "empresa": {
+          ".validate": "!newData.exists() || newData.hasOnly(['nome','doc','end','cidade','estado','tel','email'])"
+        },
+        "$other": { ".validate": false }
       }
     },
     ".read": false,

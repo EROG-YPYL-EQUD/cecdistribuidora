@@ -1,10 +1,20 @@
-const CACHE_NAME = 'erp-financeiro-pwa-v3-auth-security-firebase-only';
+const CACHE_NAME = 'erp-financeiro-pwa-v6-login-compat';
 const APP_SHELL = [
   './',
   './index.html',
   './manifest.json',
   './icon-192.png',
-  './icon-512.png'
+  './icon-512.png',
+  './css/styles.css',
+  './js/firebase.js',
+  './js/core.js',
+  './js/dashboard.js',
+  './js/gestao.js',
+  './js/despesas.js',
+  './js/receitas.js',
+  './js/bootstrap.js',
+  './js/session-fallback.js',
+  './js/service-worker-register.js'
 ];
 
 self.addEventListener('install', event => {
