@@ -1,4 +1,4 @@
-const CACHE_NAME = 'erp-financeiro-pwa-v2-session-sort-receita-venc';
+const CACHE_NAME = 'erp-financeiro-pwa-v3-auth-security-firebase-only';
 const APP_SHELL = [
   './',
   './index.html',

@@ -1,0 +1,15 @@
+{
+  "rules": {
+    "users": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid",
+        "$other": {
+          ".validate": "$other === 'contas' || $other === 'clientes' || $other === 'fornecedores' || $other === 'vendedores' || $other === 'despesas' || $other === 'gruposDespesas' || $other === 'subgruposDespesas' || $other === 'receitas' || $other === 'gruposReceitas' || $other === 'subgruposReceitas' || $other === 'empresa'"
+        }
+      }
+    },
+    ".read": false,
+    ".write": false
+  }
+}

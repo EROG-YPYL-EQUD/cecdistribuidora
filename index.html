@@ -84,7 +84,7 @@
     }
 
     if (user) {
-      window._uid = "HAbxSDyPUDg2Bc9CRbRLQMTo0UM2"; // UID fixo do banco com seus dados
+      window._uid = user.uid; // banco isolado pelo usuário realmente autenticado
       window.mostrarCarregando?.("Carregando dados do Firebase...");
       try {
         await window.carregarDadosFirebase();          // lê tudo do Firebase em /users/{uid}
@@ -402,8 +402,10 @@ let chartEvolucaoFinanceira=null, chartExecutiveScore=null;
 // Carrega TODOS os dados do Firebase para db{}
 async function carregarDadosFirebase(){
   try {
-    const UID_FIXO = "HAbxSDyPUDg2Bc9CRbRLQMTo0UM2";
-    window._uid = UID_FIXO;
+    const usuario = window._auth?.currentUser;
+    if(!usuario?.uid) throw new Error("Usuário não autenticado.");
+    const uidAutenticado = usuario.uid;
+    window._uid = uidAutenticado;
 
     const dbPadrao = {
       contas:[],clientes:[],fornecedores:[],vendedores:[],
@@ -413,7 +415,7 @@ async function carregarDadosFirebase(){
     };
 
     const dbRef = window._dbRef(window._db);
-    const caminho = `users/${UID_FIXO}`;
+    const caminho = `users/${uidAutenticado}`;
     console.log("🔎 Lendo Firebase em:", caminho);
 
     const snapshot = await window._dbGet(window._dbChild(dbRef, caminho));
@@ -519,34 +521,47 @@ function recalcularSaldosContas(){
 }
 
 function carregarDoLocalStorage(){
-  const chaves = ['contas','clientes','fornecedores','vendedores','despesas',
-                  'gruposDespesas','subgruposDespesas','receitas','gruposReceitas',
-                  'subgruposReceitas','empresa'];
-  chaves.forEach(k => {
-    const local = localStorage.getItem(k);
-    if(local){ try{ db[k]=JSON.parse(local); }catch(e){} }
-  });
+  throw new Error("localStorage desativado: o Firebase é a única fonte principal de dados.");
 }
 
 // Salva UMA chave no Firebase
+const CHAVES_PERSISTENCIA_PERMITIDAS = new Set([
+  'contas','clientes','fornecedores','vendedores','despesas',
+  'gruposDespesas','subgruposDespesas','receitas','gruposReceitas',
+  'subgruposReceitas','empresa'
+]);
+
 async function persist(chave){
-  if(!window._uid) return;
+  const usuario = window._auth?.currentUser;
+  if(!usuario?.uid || window._uid !== usuario.uid){
+    console.error("Persistência bloqueada: usuário não autenticado ou UID divergente.");
+    mostrarToast("❌ Sessão inválida. Faça login novamente.");
+    return false;
+  }
+  if(!CHAVES_PERSISTENCIA_PERMITIDAS.has(chave) || !Object.prototype.hasOwnProperty.call(db, chave)){
+    console.error("Persistência bloqueada para chave não permitida:", chave);
+    mostrarToast("❌ Operação de salvamento não permitida.");
+    return false;
+  }
   try {
-    const r = window._dbRef(window._db, `users/${window._uid}/${chave}`);
+    const r = window._dbRef(window._db, `users/${usuario.uid}/${chave}`);
     await window._dbSet(r, db[chave]);
     mostrarToast("✓ Salvo no Firebase");
+    return true;
   } catch(err){
     console.error("Erro ao salvar no Firebase:", err);
     mostrarToast("❌ Erro ao salvar no Firebase");
-    alert("Não foi possível salvar no Firebase. Nada foi salvo localmente para não misturar dados antigos.");
+    alert("Não foi possível salvar no Firebase. Nenhum fallback local foi utilizado.");
+    return false;
   }
 }
 
 // Salva TODO o db no Firebase (usado na migração)
 async function salvarBackupRestauradoFirebase(){
   // Usado somente quando o usuário confirma restauração de backup manual.
-  if(!window._uid) return;
-  const r = window._dbRef(window._db, `users/${window._uid}`);
+  const usuario = window._auth?.currentUser;
+  if(!usuario?.uid || window._uid !== usuario.uid) throw new Error("Restauração bloqueada: usuário não autenticado.");
+  const r = window._dbRef(window._db, `users/${usuario.uid}`);
   await window._dbSet(r, db);
 }
 
@@ -794,18 +809,18 @@ function renderConfig(){
       <h3>Dados da Empresa</h3>
       <p style="margin-bottom:20px; color:#94a3b8">Personalize com as informações do seu negócio.</p>
       <label>Nome da Empresa / Proprietário</label>
-      <input type="text" id="emp-nome" value="${db.empresa.nome}">
+      <input type="text" id="emp-nome" value="${escaparAtributo(db.empresa.nome)}">
       <label>CNPJ / CPF</label>
-      <input type="text" id="emp-doc" value="${db.empresa.doc}">
+      <input type="text" id="emp-doc" value="${escaparAtributo(db.empresa.doc)}">
       <label>Endereço</label>
-      <input type="text" id="emp-end" value="${db.empresa.end}">
+      <input type="text" id="emp-end" value="${escaparAtributo(db.empresa.end)}">
       <div style="display:flex; gap:10px">
-        <div style="flex:2"><label>Cidade</label><input type="text" id="emp-cidade" value="${db.empresa.cidade}"></div>
-        <div style="flex:1"><label>Estado</label><input type="text" id="emp-estado" value="${db.empresa.estado}"></div>
+        <div style="flex:2"><label>Cidade</label><input type="text" id="emp-cidade" value="${escaparAtributo(db.empresa.cidade)}"></div>
+        <div style="flex:1"><label>Estado</label><input type="text" id="emp-estado" value="${escaparAtributo(db.empresa.estado)}"></div>
       </div>
       <div style="display:flex; gap:10px">
-        <div style="flex:1"><label>Telefone</label><input type="text" id="emp-tel" value="${db.empresa.tel}"></div>
-        <div style="flex:1"><label>E-mail Empresa</label><input type="text" id="emp-email" value="${db.empresa.email}"></div>
+        <div style="flex:1"><label>Telefone</label><input type="text" id="emp-tel" value="${escaparAtributo(db.empresa.tel)}"></div>
+        <div style="flex:1"><label>E-mail Empresa</label><input type="text" id="emp-email" value="${escaparAtributo(db.empresa.email)}"></div>
       </div>
       <div style="margin-top:20px">
         <button class="btn-primary" onclick="salvarDadosEmpresa()">💾 Salvar no Firebase</button>
@@ -944,7 +959,7 @@ function atualizarSaudacaoGlobal(){
     const nome=db.empresa.nome||"Administrador";
     greetingEl.innerHTML=`
       <div class="greeting-text">
-        <h2>${saudacao}, ${nome}</h2>
+        <h2>${saudacao}, ${escaparHTML(nome)}</h2>
         <p>${dataFormatada}</p>
       </div>
       <div class="status-realtime">
@@ -1352,6 +1367,14 @@ function initCharts(recs,dess,rent){
   });
 }
 
+function escaparHTML(valor){
+  return String(valor ?? '')
+    .replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')
+    .replaceAll('"','&quot;').replaceAll("'",'&#39;');
+}
+
+function escaparAtributo(valor){ return escaparHTML(valor); }
+
 /* ================================================================
    GESTÃO (CRUD)
 ================================================================ */
@@ -1376,11 +1399,11 @@ function renderLista(m){
   }
   itens.forEach(({item:i,idx})=>{
     let det="";
-    if(m==="contas") det=`<div class="detail" style="display:block">${i.banco} | ${i.tipo} | Saldo: ${moedaBR(numeroBR(i.saldo))}</div>`;
-    else if(m==="vendedores") det=`<div id="det-${m}-${idx}" class="detail">Comissão: ${i.comissao}%<br>CPF/CNPJ: ${i.doc}<br>${i.cidade} - ${i.estado}</div>`;
-    else if(m==="clientes") det=`<div id="det-${m}-${idx}" class="detail">CPF/CNPJ: ${i.doc||'-'}<br>Telefone: ${i.telefone||'-'}<br>Endereço: ${i.end||'-'}<br>${i.cidade||''}${i.cidade&&i.estado?' - ':''}${i.estado||''}</div>`;
-    else det=`<div id="det-${m}-${idx}" class="detail">CPF/CNPJ: ${i.doc}<br>Endereço: ${i.end}<br>${i.cidade} - ${i.estado}</div>`;
-    html+=`<div class="card"><div class="row"><div onclick="${m==='contas'?'':'toggleDetalhe(\''+m+'\','+idx+')'}" style="cursor:pointer;font-weight:bold">${i.nome}</div><div><button class="btn-primary" onclick="renderForm('${m}',${idx})">Editar</button><button class="btn-danger" onclick="removeItem('${m}',${idx})">Excluir</button></div></div>${det}</div>`;
+    if(m==="contas") det=`<div class="detail" style="display:block">${escaparHTML(i.banco)} | ${escaparHTML(i.tipo)} | Saldo: ${moedaBR(numeroBR(i.saldo))}</div>`;
+    else if(m==="vendedores") det=`<div id="det-${m}-${idx}" class="detail">Comissão: ${i.comissao}%<br>CPF/CNPJ: ${escaparHTML(i.doc)}<br>${escaparHTML(i.cidade)} - ${escaparHTML(i.estado)}</div>`;
+    else if(m==="clientes") det=`<div id="det-${m}-${idx}" class="detail">CPF/CNPJ: ${escaparHTML(i.doc||'-')}<br>Telefone: ${escaparHTML(i.telefone||'-')}<br>Endereço: ${escaparHTML(i.end||'-')}<br>${escaparHTML(i.cidade||'')}${i.cidade&&i.estado?' - ':''}${escaparHTML(i.estado||'')}</div>`;
+    else det=`<div id="det-${m}-${idx}" class="detail">CPF/CNPJ: ${escaparHTML(i.doc)}<br>Endereço: ${escaparHTML(i.end)}<br>${escaparHTML(i.cidade)} - ${escaparHTML(i.estado)}</div>`;
+    html+=`<div class="card"><div class="row"><div onclick="${m==='contas'?'':'toggleDetalhe(\''+m+'\','+idx+')'}" style="cursor:pointer;font-weight:bold">${escaparHTML(i.nome)}</div><div><button class="btn-primary" onclick="renderForm('${m}',${idx})">Editar</button><button class="btn-danger" onclick="removeItem('${m}',${idx})">Excluir</button></div></div>${det}</div>`;
   });
   conteudo.innerHTML=html;
 }
@@ -1391,19 +1414,19 @@ function renderForm(m,index=null){
   if(m==="contas") return renderFormConta(index);
   if(m==="vendedores") return renderFormVendedor(index);
   let i=index!==null?db[m][index]:{nome:"",doc:"",telefone:"",end:"",cidade:"",estado:""};
-  const campoTelefone = m==="clientes" ? `<label>Telefone</label><input id="telefone" type="tel" inputmode="tel" placeholder="(00) 00000-0000" value="${i.telefone||''}">` : '';
-  openModal(`<h3>${index===null?"Cadastrar":"Editar"} ${label(m)}</h3><label>Nome / Razão Social</label><input id="nome" value="${i.nome}"><label>CPF / CNPJ</label><input id="doc" value="${i.doc}">${campoTelefone}<label>Endereço</label><input id="end" value="${i.end}"><label>Cidade</label><input id="cidade" value="${i.cidade}"><label>Estado</label><input id="estado" value="${i.estado}"><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveCadastro('${m}',${index})">Salvar</button></div>`);
+  const campoTelefone = m==="clientes" ? `<label>Telefone</label><input id="telefone" type="tel" inputmode="tel" placeholder="(00) 00000-0000" value="${escaparAtributo(i.telefone||'')}">` : '';
+  openModal(`<h3>${index===null?"Cadastrar":"Editar"} ${label(m)}</h3><label>Nome / Razão Social</label><input id="nome" value="${escaparHTML(i.nome)}"><label>CPF / CNPJ</label><input id="doc" value="${escaparHTML(i.doc)}">${campoTelefone}<label>Endereço</label><input id="end" value="${escaparHTML(i.end)}"><label>Cidade</label><input id="cidade" value="${escaparHTML(i.cidade)}"><label>Estado</label><input id="estado" value="${escaparHTML(i.estado)}"><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveCadastro('${m}',${index})">Salvar</button></div>`);
 }
 
 function renderFormVendedor(index=null){
   let i=index!==null?db.vendedores[index]:{nome:"",doc:"",end:"",cidade:"",estado:"",comissao:"",meta:0,comissaoBonus:0};
   openModal(`<h3>${index===null?"Cadastrar":"Editar"} Vendedor</h3>
-    <label>Nome</label><input id="nome" value="${i.nome}">
-    <label>CPF / CNPJ</label><input id="doc" value="${i.doc}">
-    <label>Endereço</label><input id="end" value="${i.end}">
+    <label>Nome</label><input id="nome" value="${escaparHTML(i.nome)}">
+    <label>CPF / CNPJ</label><input id="doc" value="${escaparHTML(i.doc)}">
+    <label>Endereço</label><input id="end" value="${escaparHTML(i.end)}">
     <div style="display:flex; gap:10px">
-      <div style="flex:2"><label>Cidade</label><input id="cidade" value="${i.cidade}"></div>
-      <div style="flex:1"><label>Estado</label><input id="estado" value="${i.estado}"></div>
+      <div style="flex:2"><label>Cidade</label><input id="cidade" value="${escaparHTML(i.cidade)}"></div>
+      <div style="flex:1"><label>Estado</label><input id="estado" value="${escaparHTML(i.estado)}"></div>
     </div>
     <hr>
     <div style="display:flex; gap:10px">
@@ -1417,7 +1440,7 @@ function renderFormVendedor(index=null){
 
 function renderFormConta(index=null){
   let i=index!==null?db.contas[index]:{nome:"",banco:"",tipo:"Corrente",saldo:""};
-  openModal(`<h3>${index===null?"Cadastrar":"Editar"} Conta</h3><label>Nome</label><input id="nome" value="${i.nome}"><label>Banco</label><input id="banco" value="${i.banco}"><label>Tipo</label><select id="tipo"><option>Corrente</option><option>Caixa</option><option>Carteira</option><option>Investimento</option></select><label>Saldo Inicial / Base do Caixa</label><input id="saldo" data-moeda="br" value="${moedaBR(numeroBR(i.saldoInicial!==undefined?i.saldoInicial:i.saldo))}"><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveConta(${index})">Salvar</button></div>`);
+  openModal(`<h3>${index===null?"Cadastrar":"Editar"} Conta</h3><label>Nome</label><input id="nome" value="${escaparHTML(i.nome)}"><label>Banco</label><input id="banco" value="${escaparHTML(i.banco)}"><label>Tipo</label><select id="tipo"><option>Corrente</option><option>Caixa</option><option>Carteira</option><option>Investimento</option></select><label>Saldo Inicial / Base do Caixa</label><input id="saldo" data-moeda="br" value="${moedaBR(numeroBR(i.saldoInicial!==undefined?i.saldoInicial:i.saldo))}"><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveConta(${index})">Salvar</button></div>`);
 }
 
 async function saveCadastro(m,index){
@@ -1459,11 +1482,11 @@ function renderDespesas(){ conteudo.innerHTML=`<h2>Despesas</h2><button class="b
 function renderFormDespesa(index=null){
   let d=index!==null?db.despesas[index]:{fornecedor:"",conta:"",grupo:"",subgrupo:"",vencimento:"",valor:"",situacao:"A pagar",dataPagamento:""};
   let pessoas=[...db.fornecedores,...db.vendedores];
-  openModal(`<h3>${index===null?"Cadastrar":"Editar"} Despesa</h3><label>Fornecedor / Vendedor</label><select id="fornecedor">${pessoas.map(p=>`<option ${p.nome===d.fornecedor?"selected":""}>${p.nome}</option>`).join("")}</select><label>Conta</label><select id="conta">${db.contas.map(c=>`<option ${c.nome===d.conta?"selected":""}>${c.nome}</option>`).join("")}</select><label>Grupo</label><select id="grupo" onchange="carregarSubgrupos()">${db.gruposDespesas.map(g=>`<option ${g===d.grupo?"selected":""}>${g}</option>`).join("")}</select><label>Subgrupo</label><select id="subgrupo"></select><label>Vencimento</label><input type="date" id="vencimento" value="${d.vencimento}"><label>Valor</label><input id="valor" data-moeda="br" value="${moedaBR(numeroBR(d.valor))}"><label>Situação</label><select id="situacao" onchange="togglePagamento()"><option ${d.situacao==="A pagar"?"selected":""}>A pagar</option><option ${d.situacao==="Pago"?"selected":""}>Pago</option></select><div id="boxPagamento" style="display:none"><label>Data pagamento</label><input type="date" id="dataPagamento" value="${d.dataPagamento||""}"></div><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveDespesa(${index})">Salvar</button></div>`);
+  openModal(`<h3>${index===null?"Cadastrar":"Editar"} Despesa</h3><label>Fornecedor / Vendedor</label><select id="fornecedor">${pessoas.map(p=>`<option ${p.nome===d.fornecedor?"selected":""}>${escaparHTML(p.nome)}</option>`).join("")}</select><label>Conta</label><select id="conta">${db.contas.map(c=>`<option ${c.nome===d.conta?"selected":""}>${escaparHTML(c.nome)}</option>`).join("")}</select><label>Grupo</label><select id="grupo" onchange="carregarSubgrupos()">${db.gruposDespesas.map(g=>`<option ${g===d.grupo?"selected":""}>${escaparHTML(g)}</option>`).join("")}</select><label>Subgrupo</label><select id="subgrupo"></select><label>Vencimento</label><input type="date" id="vencimento" value="${d.vencimento}"><label>Valor</label><input id="valor" data-moeda="br" value="${moedaBR(numeroBR(d.valor))}"><label>Situação</label><select id="situacao" onchange="togglePagamento()"><option ${d.situacao==="A pagar"?"selected":""}>A pagar</option><option ${d.situacao==="Pago"?"selected":""}>Pago</option></select><div id="boxPagamento" style="display:none"><label>Data pagamento</label><input type="date" id="dataPagamento" value="${d.dataPagamento||""}"></div><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveDespesa(${index})">Salvar</button></div>`);
   setTimeout(()=>{ carregarSubgrupos(d.subgrupo); togglePagamento(); },100);
 }
 
-function carregarSubgrupos(sel=""){ subgrupo.innerHTML=db.subgruposDespesas.filter(s=>s.grupo===grupo.value).map(s=>`<option ${s.nome===sel?"selected":""}>${s.nome}</option>`).join(""); }
+function carregarSubgrupos(sel=""){ subgrupo.innerHTML=db.subgruposDespesas.filter(s=>s.grupo===grupo.value).map(s=>`<option ${s.nome===sel?"selected":""}>${escaparHTML(s.nome)}</option>`).join(""); }
 function togglePagamento(){ boxPagamento.style.display=situacao.value==="Pago"?"block":"none"; }
 async function saveDespesa(index){ 
   let novaObj={fornecedor:fornecedor.value,conta:conta.value,grupo:grupo.value,subgrupo:subgrupo.value,vencimento:vencimento.value,valor:numeroBR(valor.value),situacao:situacao.value,dataPagamento:situacao.value==="Pago"?dataPagamento.value:""};
@@ -1478,7 +1501,7 @@ async function saveDespesa(index){
 function renderListaDespesas(){
   let meses=[...new Set(db.despesas.map(d=>d.vencimento? d.vencimento.slice(5,7)+"/"+d.vencimento.slice(2,4) : "").filter(Boolean))]
     .sort((a,b)=>{ const [ma,aa]=a.split('/'); const [mb,ab]=b.split('/'); return ("20"+ab+mb).localeCompare("20"+aa+ma); });
-  conteudo.innerHTML=`<h2>Minhas Despesas</h2><button class="btn-secondary" onclick="renderDespesas()">Voltar</button><button class="btn-primary" onclick="renderFormDespesa()">+ Despesa</button><hr><div style="display:flex;gap:14px;flex-wrap:wrap"><div style="flex:1;min-width:220px"><label>Buscar fornecedor/vendedor</label><input id="fBuscaFornecedor" placeholder="Digite o nome..." oninput="filtrarDespesas()"></div><div style="flex:1"><label>Mês</label><select id="fMes" onchange="filtrarDespesas()"><option>Todas</option>${meses.map(m=>`<option>${m}</option>`).join("")}</select></div><div style="flex:1"><label>Conta</label><select id="fConta" onchange="filtrarDespesas()"><option>Todas</option>${db.contas.map(c=>`<option>${c.nome}</option>`).join("")}</select></div><div style="flex:1"><label>Situação</label><select id="fSituacao" onchange="filtrarDespesas()"><option>Todas</option><option>A pagar</option><option>Pendente</option><option>Pago</option></select></div></div><div id="tabelaDespesas"></div>`;
+  conteudo.innerHTML=`<h2>Minhas Despesas</h2><button class="btn-secondary" onclick="renderDespesas()">Voltar</button><button class="btn-primary" onclick="renderFormDespesa()">+ Despesa</button><hr><div style="display:flex;gap:14px;flex-wrap:wrap"><div style="flex:1;min-width:220px"><label>Buscar fornecedor/vendedor</label><input id="fBuscaFornecedor" placeholder="Digite o nome..." oninput="filtrarDespesas()"></div><div style="flex:1"><label>Mês</label><select id="fMes" onchange="filtrarDespesas()"><option>Todas</option>${meses.map(m=>`<option>${m}</option>`).join("")}</select></div><div style="flex:1"><label>Conta</label><select id="fConta" onchange="filtrarDespesas()"><option>Todas</option>${db.contas.map(c=>`<option>${escaparHTML(c.nome)}</option>`).join("")}</select></div><div style="flex:1"><label>Situação</label><select id="fSituacao" onchange="filtrarDespesas()"><option>Todas</option><option>A pagar</option><option>Pendente</option><option>Pago</option></select></div></div><div id="tabelaDespesas"></div>`;
   filtrarDespesas();
 }
 
@@ -1493,7 +1516,7 @@ function filtrarDespesas(){
     if(s!=="Pago"&&d.vencimento&&new Date(d.vencimento+"T00:00:00")<hoje) s="Pendente"; 
     let dm=d.vencimento?d.vencimento.slice(5,7)+"/"+d.vencimento.slice(2,4):""; 
     const nomeFornecedor=(d.fornecedor||"").toLowerCase();
-    if((mes==="Todas"||dm===mes)&&(conta==="Todas"||d.conta===conta)&&(sit==="Todas"||s===sit)&&(!busca||nomeFornecedor.includes(busca))) html+=`<tr><td>${d.vencimento||''}</td><td>${d.fornecedor||''}</td><td>${d.conta||''}</td><td>${d.grupo||''}</td><td>${d.subgrupo||''}</td><td>${moedaBR(numeroBR(d.valor))}</td><td>${s}</td><td><button class="btn-primary" onclick="renderFormDespesa(${i})">Editar</button><button class="btn-secondary" onclick="baixarDespesa(${i})">Baixa</button><button class="btn-danger" onclick="excluirDespesa(${i})">Excluir</button></td></tr>`; 
+    if((mes==="Todas"||dm===mes)&&(conta==="Todas"||d.conta===conta)&&(sit==="Todas"||s===sit)&&(!busca||nomeFornecedor.includes(busca))) html+=`<tr><td>${d.vencimento||''}</td><td>${escaparHTML(d.fornecedor||'')}</td><td>${escaparHTML(d.conta||'')}</td><td>${escaparHTML(d.grupo||'')}</td><td>${escaparHTML(d.subgrupo||'')}</td><td>${moedaBR(numeroBR(d.valor))}</td><td>${s}</td><td><button class="btn-primary" onclick="renderFormDespesa(${i})">Editar</button><button class="btn-secondary" onclick="baixarDespesa(${i})">Baixa</button><button class="btn-danger" onclick="excluirDespesa(${i})">Excluir</button></td></tr>`; 
   });
   html+="</table>"; tabelaDespesas.innerHTML=html;
 }
@@ -1518,7 +1541,7 @@ function renderGrupoSubgrupo(et=null,idx=null,si=null){
   let title="Grupo / Subgrupo Despesas",gv="",sv="",gp=0;
   if(et==='grupo'&&idx!==null){title="Editar Grupo";gv=db.gruposDespesas[idx];}
   else if(et==='subgrupo'&&idx!==null&&si!==null){title="Editar Subgrupo";let s=db.subgruposDespesas.filter(s=>s.grupo===db.gruposDespesas[idx])[si];sv=s.nome;gp=idx;}
-  openModal(`<h3>${title}</h3><label>Grupo</label><input id="novoGrupo" value="${gv}"><button class="btn-primary" style="margin-top:10px" onclick="saveGrupo(${idx})">${et==='grupo'?'Salvar Alteração':'+ Grupo'}</button><hr><label>Grupo Pai</label><select id="grupoPai">${db.gruposDespesas.map((g,i)=>`<option value="${i}" ${i===gp?'selected':''}>${g}</option>`).join("")}</select><label>Subgrupo</label><input id="novoSubgrupo" value="${sv}"><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveSubgrupo(${idx},${si})">${et==='subgrupo'?'Salvar Alteração':'+ Subgrupo'}</button></div>`);
+  openModal(`<h3>${title}</h3><label>Grupo</label><input id="novoGrupo" value="${escaparAtributo(gv)}"><button class="btn-primary" style="margin-top:10px" onclick="saveGrupo(${idx})">${et==='grupo'?'Salvar Alteração':'+ Grupo'}</button><hr><label>Grupo Pai</label><select id="grupoPai">${db.gruposDespesas.map((g,i)=>`<option value="${i}" ${i===gp?'selected':''}>${escaparHTML(g)}</option>`).join("")}</select><label>Subgrupo</label><input id="novoSubgrupo" value="${escaparAtributo(sv)}"><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveSubgrupo(${idx},${si})">${et==='subgrupo'?'Salvar Alteração':'+ Subgrupo'}</button></div>`);
 }
 
 async function saveGrupo(idx=null){ if(idx!==null&&idx!==undefined){let a=db.gruposDespesas[idx];db.gruposDespesas[idx]=novoGrupo.value;db.subgruposDespesas.forEach(s=>{if(s.grupo===a)s.grupo=novoGrupo.value;});await persist("subgruposDespesas");}else{db.gruposDespesas.push(novoGrupo.value);} await persist("gruposDespesas"); if(abaAtiva==='gestao') renderListaGrupoDespesa(); else renderGrupoSubgrupo(); }
@@ -1528,7 +1551,7 @@ async function excluirSubgrupoDespesa(gi,si){ if(!confirm("Excluir subgrupo?")) 
 
 function renderListaGrupoDespesa(){
   let html=`<div class="row"><h2>Grupos Despesas</h2><button class="btn-primary" onclick="renderGrupoSubgrupo()">+ Novo</button></div><hr>`;
-  db.gruposDespesas.forEach((g,gi)=>{ html+=`<div class="card"><div class="row"><b>${g}</b><div><button class="btn-primary btn-small" onclick="renderGrupoSubgrupo('grupo',${gi})">Editar</button><button class="btn-danger btn-small" onclick="excluirGrupoDespesa(${gi})">Excluir</button></div></div><div style="margin-top:8px">`; db.subgruposDespesas.filter(s=>s.grupo===g).forEach((s,si)=>{ html+=`<div class="item-list"><span>└ ${s.nome}</span><div><button class="btn-secondary btn-small" onclick="renderGrupoSubgrupo('subgrupo',${gi},${si})">Editar</button><button class="btn-danger btn-small" onclick="excluirSubgrupoDespesa(${gi},${si})">Excluir</button></div></div>`; }); html+="</div></div>"; });
+  db.gruposDespesas.forEach((g,gi)=>{ html+=`<div class="card"><div class="row"><b>${escaparHTML(g)}</b><div><button class="btn-primary btn-small" onclick="renderGrupoSubgrupo('grupo',${gi})">Editar</button><button class="btn-danger btn-small" onclick="excluirGrupoDespesa(${gi})">Excluir</button></div></div><div style="margin-top:8px">`; db.subgruposDespesas.filter(s=>s.grupo===g).forEach((s,si)=>{ html+=`<div class="item-list"><span>└ ${escaparHTML(s.nome)}</span><div><button class="btn-secondary btn-small" onclick="renderGrupoSubgrupo('subgrupo',${gi},${si})">Editar</button><button class="btn-danger btn-small" onclick="excluirSubgrupoDespesa(${gi},${si})">Excluir</button></div></div>`; }); html+="</div></div>"; });
   conteudo.innerHTML=html;
 }
 
@@ -1558,10 +1581,10 @@ function renderFormReceita(identificador=null){
   const tipoPadrao = r.tipoVenda || "avista";
   const qtdPadrao = r.qtdParcelas || 1;
   openModal(`<h3>${index===null?"Cadastrar":"Editar"} Receita ${index!==null && (r.tipoVenda||'avista')==='prazo' ? '- Parcela '+(r.parcelaAtual||1)+'/'+(r.qtdParcelas||1) : ''}</h3>
-  <label>Cliente</label><select id="cliente">${db.clientes.map(c=>`<option ${c.nome===r.cliente?"selected":""}>${c.nome}</option>`).join("")}</select>
-  <label>Vendedor</label><select id="vendedor">${db.vendedores.map(v=>`<option ${v.nome===r.vendedor?"selected":""}>${v.nome}</option>`).join("")}</select>
-  <label>Conta</label><select id="conta">${db.contas.map(c=>`<option ${c.nome===r.conta?"selected":""}>${c.nome}</option>`).join("")}</select>
-  <label>Grupo</label><select id="grupo" onchange="carregarSubgruposReceita()">${db.gruposReceitas.map(g=>`<option ${g===r.grupo?"selected":""}>${g}</option>`).join("")}</select>
+  <label>Cliente</label><select id="cliente">${db.clientes.map(c=>`<option ${c.nome===r.cliente?"selected":""}>${escaparHTML(c.nome)}</option>`).join("")}</select>
+  <label>Vendedor</label><select id="vendedor">${db.vendedores.map(v=>`<option ${v.nome===r.vendedor?"selected":""}>${escaparHTML(v.nome)}</option>`).join("")}</select>
+  <label>Conta</label><select id="conta">${db.contas.map(c=>`<option ${c.nome===r.conta?"selected":""}>${escaparHTML(c.nome)}</option>`).join("")}</select>
+  <label>Grupo</label><select id="grupo" onchange="carregarSubgruposReceita()">${db.gruposReceitas.map(g=>`<option ${g===r.grupo?"selected":""}>${escaparHTML(g)}</option>`).join("")}</select>
   <label>Subgrupo</label><select id="subgrupo"></select>
   <label>Data da venda</label><input type="date" id="dataVenda" value="${dataVendaPadrao}">
   <label>Tipo da venda</label>
@@ -1581,7 +1604,7 @@ function renderFormReceita(identificador=null){
   setTimeout(()=>{ carregarSubgruposReceita(r.subgrupo); toggleRecebimento(); toggleParcelasReceita(); },100);
 }
 
-function carregarSubgruposReceita(sel=""){ subgrupo.innerHTML=db.subgruposReceitas.filter(s=>s.grupo===grupo.value).map(s=>`<option ${s.nome===sel?"selected":""}>${s.nome}</option>`).join(""); }
+function carregarSubgruposReceita(sel=""){ subgrupo.innerHTML=db.subgruposReceitas.filter(s=>s.grupo===grupo.value).map(s=>`<option ${s.nome===sel?"selected":""}>${escaparHTML(s.nome)}</option>`).join(""); }
 function toggleRecebimento(){ boxRecebimento.style.display=situacao.value==="Recebido"?"block":"none"; }
 function toggleParcelasReceita(){
   const tipo=document.getElementById('tipoVenda')?.value||'avista';
@@ -1611,7 +1634,7 @@ async function saveReceita(identificador=null){
   // Venda à vista: o vencimento é automaticamente a mesma data da venda quando não informado.
   // Isso garante que a coluna Vencimento nunca fique vazia para recebimentos à vista.
   const vencimentoInformado=(document.getElementById('vencimento')?.value)||'';
-  const vencimentoBase=tipo==='avista' ? (vencimentoInformado || dataVendaValor) : vencimentoInformado;
+  const vencimentoBase=tipo==='avista' ? dataVendaValor : vencimentoInformado;
   let transacaoAnterior=index!==null&&index!=="null"?db.receitas[index]:null;
 
   // Em edição, altera somente a receita/parcela aberta.
@@ -1654,7 +1677,7 @@ async function saveReceita(identificador=null){
 function renderListaReceitas(){
   let meses=[...new Set(db.receitas.map(r=>{ const d=r.vencimento||((r.tipoVenda||'avista')==='avista'?r.dataVenda:''); return d? d.slice(5,7)+"/"+d.slice(2,4) : ""; }).filter(Boolean))]
     .sort((a,b)=>{ const [ma,aa]=a.split('/'); const [mb,ab]=b.split('/'); return ("20"+ab+mb).localeCompare("20"+aa+ma); });
-  conteudo.innerHTML=`<h2>Minhas Receitas</h2><button class="btn-secondary" onclick="renderReceitas()">Voltar</button><button class="btn-primary" onclick="renderFormReceita()">+ Receita</button><hr><div style="display:flex;gap:14px;flex-wrap:wrap"><div style="flex:1;min-width:220px"><label>Buscar cliente</label><input id="fBuscaCliente" placeholder="Digite o nome..." oninput="filtrarReceitas()"></div><div style="flex:1"><label>Mês</label><select id="fMes" onchange="filtrarReceitas()"><option>Todas</option>${meses.map(m=>`<option>${m}</option>`).join("")}</select></div><div style="flex:1"><label>Conta</label><select id="fConta" onchange="filtrarReceitas()"><option>Todas</option>${db.contas.map(c=>`<option>${c.nome}</option>`).join("")}</select></div><div style="flex:1"><label>Situação</label><select id="fSituacao" onchange="filtrarReceitas()"><option>Todas</option><option>A receber</option><option>Pendente</option><option>Recebido</option></select></div></div><div id="tabelaReceitas"></div>`;
+  conteudo.innerHTML=`<h2>Minhas Receitas</h2><button class="btn-secondary" onclick="renderReceitas()">Voltar</button><button class="btn-primary" onclick="renderFormReceita()">+ Receita</button><hr><div style="display:flex;gap:14px;flex-wrap:wrap"><div style="flex:1;min-width:220px"><label>Buscar cliente</label><input id="fBuscaCliente" placeholder="Digite o nome..." oninput="filtrarReceitas()"></div><div style="flex:1"><label>Mês</label><select id="fMes" onchange="filtrarReceitas()"><option>Todas</option>${meses.map(m=>`<option>${m}</option>`).join("")}</select></div><div style="flex:1"><label>Conta</label><select id="fConta" onchange="filtrarReceitas()"><option>Todas</option>${db.contas.map(c=>`<option>${escaparHTML(c.nome)}</option>`).join("")}</select></div><div style="flex:1"><label>Situação</label><select id="fSituacao" onchange="filtrarReceitas()"><option>Todas</option><option>A receber</option><option>Pendente</option><option>Recebido</option></select></div></div><div id="tabelaReceitas"></div>`;
   filtrarReceitas();
 }
 
@@ -1673,7 +1696,7 @@ function filtrarReceitas(){
     if((mes==="Todas"||rm===mes)&&(conta==="Todas"||r.conta===conta)&&(sit==="Todas"||s===sit)&&(!busca||nomeCliente.includes(busca))){
       const tipoLabel=(r.tipoVenda||'avista')==='prazo'?'A prazo':'À vista';
       const parcelaLabel=(r.tipoVenda||'avista')==='prazo'?`${r.parcelaAtual||1}/${r.qtdParcelas||1}`:'-';
-      html+=`<tr><td>${r.dataVenda||r.vencimento||''}</td><td>${vencExibido||''}</td><td>${tipoLabel}</td><td>${parcelaLabel}</td><td>${r.cliente||''}</td><td>${r.vendedor||"-"}</td><td>${r.conta||''}</td><td>${r.grupo||''}</td><td>${r.subgrupo||''}</td><td>${moedaBR(numeroBR(r.valor))}</td><td>${s}</td><td><button class="btn-primary" onclick="renderFormReceita('${escaparJSReceita(r.id)}')">Editar</button><button class="btn-secondary" onclick="baixarReceita(${i})">Baixa</button><button class="btn-danger" onclick="excluirReceita(${i})">Excluir</button></td></tr>`;
+      html+=`<tr><td>${r.dataVenda||r.vencimento||''}</td><td>${vencExibido||''}</td><td>${tipoLabel}</td><td>${parcelaLabel}</td><td>${escaparHTML(r.cliente||'')}</td><td>${escaparHTML(r.vendedor||"-")}</td><td>${escaparHTML(r.conta||'')}</td><td>${escaparHTML(r.grupo||'')}</td><td>${escaparHTML(r.subgrupo||'')}</td><td>${moedaBR(numeroBR(r.valor))}</td><td>${s}</td><td><button class="btn-primary" onclick="renderFormReceita('${escaparJSReceita(r.id)}')">Editar</button><button class="btn-secondary" onclick="baixarReceita(${i})">Baixa</button><button class="btn-danger" onclick="excluirReceita(${i})">Excluir</button></td></tr>`;
     }
   });
   html+="</table>"; tabelaReceitas.innerHTML=html;
@@ -1702,7 +1725,7 @@ function renderGrupoSubgrupoReceita(et=null,idx=null,si=null){
   let title="Grupo / Subgrupo Receitas",gv="",sv="",gp=0;
   if(et==='grupo'&&idx!==null){title="Editar Grupo";gv=db.gruposReceitas[idx];}
   else if(et==='subgrupo'&&idx!==null&&si!==null){title="Editar Subgrupo";let s=db.subgruposReceitas.filter(s=>s.grupo===db.gruposReceitas[idx])[si];sv=s.nome;gp=idx;}
-  openModal(`<h3>${title}</h3><label>Grupo</label><input id="novoGrupoReceita" value="${gv}"><button class="btn-primary" style="margin-top:10px" onclick="saveGrupoReceita(${idx})">${et==='grupo'?'Salvar':'+ Grupo'}</button><hr><label>Grupo Pai</label><select id="grupoPaiReceita">${db.gruposReceitas.map((g,i)=>`<option value="${i}" ${i===gp?'selected':''}>${g}</option>`).join("")}</select><label>Subgrupo</label><input id="novoSubgrupoReceita" value="${sv}"><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveSubgrupoReceita(${idx},${si})">${et==='subgrupo'?'Salvar':'+ Subgrupo'}</button></div>`);
+  openModal(`<h3>${title}</h3><label>Grupo</label><input id="novoGrupoReceita" value="${escaparAtributo(gv)}"><button class="btn-primary" style="margin-top:10px" onclick="saveGrupoReceita(${idx})">${et==='grupo'?'Salvar':'+ Grupo'}</button><hr><label>Grupo Pai</label><select id="grupoPaiReceita">${db.gruposReceitas.map((g,i)=>`<option value="${i}" ${i===gp?'selected':''}>${escaparHTML(g)}</option>`).join("")}</select><label>Subgrupo</label><input id="novoSubgrupoReceita" value="${escaparAtributo(sv)}"><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveSubgrupoReceita(${idx},${si})">${et==='subgrupo'?'Salvar':'+ Subgrupo'}</button></div>`);
 }
 
 async function saveGrupoReceita(idx=null){ if(idx!==null&&idx!==undefined){let a=db.gruposReceitas[idx];db.gruposReceitas[idx]=novoGrupoReceita.value;db.subgruposReceitas.forEach(s=>{if(s.grupo===a)s.grupo=novoGrupoReceita.value;});await persist("subgruposReceitas");}else{db.gruposReceitas.push(novoGrupoReceita.value);} await persist("gruposReceitas"); if(abaAtiva==='gestao') renderListaGrupoReceita(); else renderGrupoSubgrupoReceita(); }
@@ -1712,7 +1735,7 @@ async function excluirSubgrupoReceita(gi,si){ if(!confirm("Excluir subgrupo?")) 
 
 function renderListaGrupoReceita(){
   let html=`<div class="row"><h2>Grupos Receitas</h2><button class="btn-primary" onclick="renderGrupoSubgrupoReceita()">+ Novo</button></div><hr>`;
-  db.gruposReceitas.forEach((g,gi)=>{ html+=`<div class="card"><div class="row"><b>${g}</b><div><button class="btn-primary btn-small" onclick="renderGrupoSubgrupoReceita('grupo',${gi})">Editar</button><button class="btn-danger btn-small" onclick="excluirGrupoReceita(${gi})">Excluir</button></div></div><div style="margin-top:8px">`; db.subgruposReceitas.filter(s=>s.grupo===g).forEach((s,si)=>{ html+=`<div class="item-list"><span>└ ${s.nome}</span><div><button class="btn-secondary btn-small" onclick="renderGrupoSubgrupoReceita('subgrupo',${gi},${si})">Editar</button><button class="btn-danger btn-small" onclick="excluirSubgrupoReceita(${gi},${si})">Excluir</button></div></div>`; }); html+="</div></div>"; });
+  db.gruposReceitas.forEach((g,gi)=>{ html+=`<div class="card"><div class="row"><b>${escaparHTML(g)}</b><div><button class="btn-primary btn-small" onclick="renderGrupoSubgrupoReceita('grupo',${gi})">Editar</button><button class="btn-danger btn-small" onclick="excluirGrupoReceita(${gi})">Excluir</button></div></div><div style="margin-top:8px">`; db.subgruposReceitas.filter(s=>s.grupo===g).forEach((s,si)=>{ html+=`<div class="item-list"><span>└ ${escaparHTML(s.nome)}</span><div><button class="btn-secondary btn-small" onclick="renderGrupoSubgrupoReceita('subgrupo',${gi},${si})">Editar</button><button class="btn-danger btn-small" onclick="excluirSubgrupoReceita(${gi},${si})">Excluir</button></div></div>`; }); html+="</div></div>"; });
   conteudo.innerHTML=html;
 }
 </script>
