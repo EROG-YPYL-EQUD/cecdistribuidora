@@ -1,4 +1,4 @@
-const CACHE_NAME = 'erp-financeiro-pwa-v1';
+const CACHE_NAME = 'erp-financeiro-pwa-v2-session-sort-receita-venc';
 const APP_SHELL = [
   './',
   './index.html',

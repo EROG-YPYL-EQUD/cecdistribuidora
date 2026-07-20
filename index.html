@@ -92,6 +92,7 @@
         document.getElementById('main-app').style.display = 'block';
         window.atualizarSaudacaoGlobal?.();
         window.mudarAba?.('dashboard');
+        window.reiniciarTimersInatividade?.();
       } catch (err) {
         console.error('Erro ao abrir sistema:', err);
         document.getElementById('login-screen').style.display = 'flex';
@@ -101,6 +102,7 @@
       }
     } else {
       window._uid = null;
+      window.pararTimersInatividade?.();
       document.getElementById('login-screen').style.display = 'flex';
       document.getElementById('main-app').style.display = 'none';
       window.esconderCarregando?.();
@@ -702,6 +704,50 @@ async function realizarLogout(){
     document.getElementById('btn-entrar').textContent='Entrar no Sistema';
   } catch(err){ console.error(err); }
 }
+
+/* ================================================================
+   SESSÃO — LOGOUT AUTOMÁTICO POR INATIVIDADE
+================================================================ */
+const TEMPO_INATIVIDADE_MS = 30 * 60 * 1000;
+const TEMPO_AVISO_MS = 28 * 60 * 1000;
+let timerInatividade = null;
+let timerAvisoInatividade = null;
+let avisoInatividadeExibido = false;
+
+function sessaoEstaLogada(){
+  return !!(window._auth && window._auth.currentUser);
+}
+
+function reiniciarTimersInatividade(){
+  if(!sessaoEstaLogada()) return;
+  clearTimeout(timerInatividade);
+  clearTimeout(timerAvisoInatividade);
+  avisoInatividadeExibido = false;
+  timerAvisoInatividade = setTimeout(()=>{
+    if(sessaoEstaLogada()){
+      avisoInatividadeExibido = true;
+      mostrarToast('Sua sessão será encerrada em 2 minutos por inatividade.');
+    }
+  }, TEMPO_AVISO_MS);
+  timerInatividade = setTimeout(async ()=>{
+    if(!sessaoEstaLogada()) return;
+    try {
+      await realizarLogout();
+      mostrarToast('Sessão encerrada automaticamente por 30 minutos de inatividade.');
+    } catch(e){ console.error('Erro no logout automático:', e); }
+  }, TEMPO_INATIVIDADE_MS);
+}
+
+function pararTimersInatividade(){
+  clearTimeout(timerInatividade);
+  clearTimeout(timerAvisoInatividade);
+  timerInatividade = null;
+  timerAvisoInatividade = null;
+}
+
+['mousedown','mousemove','keydown','touchstart','scroll','click'].forEach(evento=>{
+  document.addEventListener(evento, reiniciarTimersInatividade, {passive:true});
+});
 
 /* ================================================================
    NAVEGAÇÃO
@@ -1323,10 +1369,16 @@ function renderSubmenu(m){ conteudo.innerHTML=`<h2>${plural(m)}</h2><button clas
 
 function renderLista(m){
   let html=`<h2>${prefixoLista(m)} ${plural(m)}</h2><button class="btn-secondary" onclick="renderSubmenu('${m}')">Voltar</button><button class="btn-primary" onclick="renderForm('${m}')">+ ${label(m)}</button><hr>`;
-  db[m].forEach((i,idx)=>{
+  // Exibe clientes, fornecedores e vendedores em ordem alfabética sem alterar os índices reais do banco.
+  const itens = db[m].map((item, idx)=>({item, idx}));
+  if(['clientes','fornecedores','vendedores'].includes(m)){
+    itens.sort((a,b)=>(a.item.nome||'').localeCompare((b.item.nome||''),'pt-BR',{sensitivity:'base',numeric:true}));
+  }
+  itens.forEach(({item:i,idx})=>{
     let det="";
     if(m==="contas") det=`<div class="detail" style="display:block">${i.banco} | ${i.tipo} | Saldo: ${moedaBR(numeroBR(i.saldo))}</div>`;
     else if(m==="vendedores") det=`<div id="det-${m}-${idx}" class="detail">Comissão: ${i.comissao}%<br>CPF/CNPJ: ${i.doc}<br>${i.cidade} - ${i.estado}</div>`;
+    else if(m==="clientes") det=`<div id="det-${m}-${idx}" class="detail">CPF/CNPJ: ${i.doc||'-'}<br>Telefone: ${i.telefone||'-'}<br>Endereço: ${i.end||'-'}<br>${i.cidade||''}${i.cidade&&i.estado?' - ':''}${i.estado||''}</div>`;
     else det=`<div id="det-${m}-${idx}" class="detail">CPF/CNPJ: ${i.doc}<br>Endereço: ${i.end}<br>${i.cidade} - ${i.estado}</div>`;
     html+=`<div class="card"><div class="row"><div onclick="${m==='contas'?'':'toggleDetalhe(\''+m+'\','+idx+')'}" style="cursor:pointer;font-weight:bold">${i.nome}</div><div><button class="btn-primary" onclick="renderForm('${m}',${idx})">Editar</button><button class="btn-danger" onclick="removeItem('${m}',${idx})">Excluir</button></div></div>${det}</div>`;
   });
@@ -1338,8 +1390,9 @@ function toggleDetalhe(m,i){ const el=document.getElementById(`det-${m}-${i}`); 
 function renderForm(m,index=null){
   if(m==="contas") return renderFormConta(index);
   if(m==="vendedores") return renderFormVendedor(index);
-  let i=index!==null?db[m][index]:{nome:"",doc:"",end:"",cidade:"",estado:""};
-  openModal(`<h3>${index===null?"Cadastrar":"Editar"} ${label(m)}</h3><label>Nome / Razão Social</label><input id="nome" value="${i.nome}"><label>CPF / CNPJ</label><input id="doc" value="${i.doc}"><label>Endereço</label><input id="end" value="${i.end}"><label>Cidade</label><input id="cidade" value="${i.cidade}"><label>Estado</label><input id="estado" value="${i.estado}"><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveCadastro('${m}',${index})">Salvar</button></div>`);
+  let i=index!==null?db[m][index]:{nome:"",doc:"",telefone:"",end:"",cidade:"",estado:""};
+  const campoTelefone = m==="clientes" ? `<label>Telefone</label><input id="telefone" type="tel" inputmode="tel" placeholder="(00) 00000-0000" value="${i.telefone||''}">` : '';
+  openModal(`<h3>${index===null?"Cadastrar":"Editar"} ${label(m)}</h3><label>Nome / Razão Social</label><input id="nome" value="${i.nome}"><label>CPF / CNPJ</label><input id="doc" value="${i.doc}">${campoTelefone}<label>Endereço</label><input id="end" value="${i.end}"><label>Cidade</label><input id="cidade" value="${i.cidade}"><label>Estado</label><input id="estado" value="${i.estado}"><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveCadastro('${m}',${index})">Salvar</button></div>`);
 }
 
 function renderFormVendedor(index=null){
@@ -1367,7 +1420,12 @@ function renderFormConta(index=null){
   openModal(`<h3>${index===null?"Cadastrar":"Editar"} Conta</h3><label>Nome</label><input id="nome" value="${i.nome}"><label>Banco</label><input id="banco" value="${i.banco}"><label>Tipo</label><select id="tipo"><option>Corrente</option><option>Caixa</option><option>Carteira</option><option>Investimento</option></select><label>Saldo Inicial / Base do Caixa</label><input id="saldo" data-moeda="br" value="${moedaBR(numeroBR(i.saldoInicial!==undefined?i.saldoInicial:i.saldo))}"><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveConta(${index})">Salvar</button></div>`);
 }
 
-async function saveCadastro(m,index){ let obj={nome:nome.value,doc:doc.value,end:end.value,cidade:cidade.value,estado:estado.value}; if(index===null||index==="null") db[m].push(obj); else db[m][index]=obj; await persist(m); closeModal(); renderLista(m); }
+async function saveCadastro(m,index){
+  let obj={nome:nome.value,doc:doc.value,end:end.value,cidade:cidade.value,estado:estado.value};
+  if(m==="clientes") obj.telefone=(document.getElementById("telefone")?.value||"").trim();
+  if(index===null||index==="null") db[m].push(obj); else db[m][index]=obj;
+  await persist(m); closeModal(); renderLista(m);
+}
 async function saveVendedor(index){ 
   let obj={
     nome:nome.value,
@@ -1550,6 +1608,10 @@ async function saveReceita(identificador=null){
   const dataVendaValor=(document.getElementById('dataVenda')?.value) || vencimento.value;
   const qtd=Math.max(1, parseInt((document.getElementById('qtdParcelas')?.value) || 1));
   const valorTotal=numeroBR(valor.value);
+  // Venda à vista: o vencimento é automaticamente a mesma data da venda quando não informado.
+  // Isso garante que a coluna Vencimento nunca fique vazia para recebimentos à vista.
+  const vencimentoInformado=(document.getElementById('vencimento')?.value)||'';
+  const vencimentoBase=tipo==='avista' ? (vencimentoInformado || dataVendaValor) : vencimentoInformado;
   let transacaoAnterior=index!==null&&index!=="null"?db.receitas[index]:null;
 
   // Em edição, altera somente a receita/parcela aberta.
@@ -1560,7 +1622,7 @@ async function saveReceita(identificador=null){
       id: transacaoAnterior?.id || gerarIdReceita('REC'),
       vendaId: transacaoAnterior?.vendaId || gerarIdReceita('VENDA'),
       cliente:cliente.value,vendedor:vendedor.value,conta:conta.value,grupo:grupo.value,subgrupo:subgrupo.value,
-      dataVenda:dataVendaValor,tipoVenda:tipo,vencimento:vencimento.value,valor:valorTotal,
+      dataVenda:dataVendaValor,tipoVenda:tipo,vencimento:vencimentoBase,valor:valorTotal,
       situacao:situacao.value,dataRecebimento:situacao.value==="Recebido"?dataRecebimento.value:"",
       qtdParcelas:transacaoAnterior?.qtdParcelas || qtd,parcelaAtual:transacaoAnterior?.parcelaAtual||1,
       atualizadoEm:new Date().toISOString()
@@ -1576,7 +1638,7 @@ async function saveReceita(identificador=null){
       let novaObj={
         id:gerarIdReceita('REC'),vendaId:vendaId,
         cliente:cliente.value,vendedor:vendedor.value,conta:conta.value,grupo:grupo.value,subgrupo:subgrupo.value,
-        dataVenda:dataVendaValor,tipoVenda:tipo,vencimento:tipo==='prazo'?addMesesDataISO(vencimento.value,n-1):vencimento.value,
+        dataVenda:dataVendaValor,tipoVenda:tipo,vencimento:tipo==='prazo'?addMesesDataISO(vencimentoBase,n-1):vencimentoBase,
         valor:valorDaParcela,situacao:situacao.value,dataRecebimento:situacao.value==="Recebido"?dataRecebimento.value:"",
         qtdParcelas:parcelas,parcelaAtual:n,criadoEm:new Date().toISOString(),atualizadoEm:new Date().toISOString()
       };
@@ -1590,7 +1652,7 @@ async function saveReceita(identificador=null){
 }
 
 function renderListaReceitas(){
-  let meses=[...new Set(db.receitas.map(r=>r.vencimento? r.vencimento.slice(5,7)+"/"+r.vencimento.slice(2,4) : "").filter(Boolean))]
+  let meses=[...new Set(db.receitas.map(r=>{ const d=r.vencimento||((r.tipoVenda||'avista')==='avista'?r.dataVenda:''); return d? d.slice(5,7)+"/"+d.slice(2,4) : ""; }).filter(Boolean))]
     .sort((a,b)=>{ const [ma,aa]=a.split('/'); const [mb,ab]=b.split('/'); return ("20"+ab+mb).localeCompare("20"+aa+ma); });
   conteudo.innerHTML=`<h2>Minhas Receitas</h2><button class="btn-secondary" onclick="renderReceitas()">Voltar</button><button class="btn-primary" onclick="renderFormReceita()">+ Receita</button><hr><div style="display:flex;gap:14px;flex-wrap:wrap"><div style="flex:1;min-width:220px"><label>Buscar cliente</label><input id="fBuscaCliente" placeholder="Digite o nome..." oninput="filtrarReceitas()"></div><div style="flex:1"><label>Mês</label><select id="fMes" onchange="filtrarReceitas()"><option>Todas</option>${meses.map(m=>`<option>${m}</option>`).join("")}</select></div><div style="flex:1"><label>Conta</label><select id="fConta" onchange="filtrarReceitas()"><option>Todas</option>${db.contas.map(c=>`<option>${c.nome}</option>`).join("")}</select></div><div style="flex:1"><label>Situação</label><select id="fSituacao" onchange="filtrarReceitas()"><option>Todas</option><option>A receber</option><option>Pendente</option><option>Recebido</option></select></div></div><div id="tabelaReceitas"></div>`;
   filtrarReceitas();
@@ -1605,12 +1667,13 @@ function filtrarReceitas(){
   lista.forEach(({r,i})=>{
     let s=r.situacao;
     if(s!=="Recebido"&&r.vencimento&&new Date(r.vencimento+"T00:00:00")<hoje) s="Pendente";
-    let rm=r.vencimento?r.vencimento.slice(5,7)+"/"+r.vencimento.slice(2,4):"";
+    const vencExibido=r.vencimento||((r.tipoVenda||'avista')==='avista'?r.dataVenda:'');
+    let rm=vencExibido?vencExibido.slice(5,7)+"/"+vencExibido.slice(2,4):"";
     const nomeCliente=(r.cliente||"").toLowerCase();
     if((mes==="Todas"||rm===mes)&&(conta==="Todas"||r.conta===conta)&&(sit==="Todas"||s===sit)&&(!busca||nomeCliente.includes(busca))){
       const tipoLabel=(r.tipoVenda||'avista')==='prazo'?'A prazo':'À vista';
       const parcelaLabel=(r.tipoVenda||'avista')==='prazo'?`${r.parcelaAtual||1}/${r.qtdParcelas||1}`:'-';
-      html+=`<tr><td>${r.dataVenda||r.vencimento||''}</td><td>${r.vencimento||''}</td><td>${tipoLabel}</td><td>${parcelaLabel}</td><td>${r.cliente||''}</td><td>${r.vendedor||"-"}</td><td>${r.conta||''}</td><td>${r.grupo||''}</td><td>${r.subgrupo||''}</td><td>${moedaBR(numeroBR(r.valor))}</td><td>${s}</td><td><button class="btn-primary" onclick="renderFormReceita('${escaparJSReceita(r.id)}')">Editar</button><button class="btn-secondary" onclick="baixarReceita(${i})">Baixa</button><button class="btn-danger" onclick="excluirReceita(${i})">Excluir</button></td></tr>`;
+      html+=`<tr><td>${r.dataVenda||r.vencimento||''}</td><td>${vencExibido||''}</td><td>${tipoLabel}</td><td>${parcelaLabel}</td><td>${r.cliente||''}</td><td>${r.vendedor||"-"}</td><td>${r.conta||''}</td><td>${r.grupo||''}</td><td>${r.subgrupo||''}</td><td>${moedaBR(numeroBR(r.valor))}</td><td>${s}</td><td><button class="btn-primary" onclick="renderFormReceita('${escaparJSReceita(r.id)}')">Editar</button><button class="btn-secondary" onclick="baixarReceita(${i})">Baixa</button><button class="btn-danger" onclick="excluirReceita(${i})">Excluir</button></td></tr>`;
     }
   });
   html+="</table>"; tabelaReceitas.innerHTML=html;
