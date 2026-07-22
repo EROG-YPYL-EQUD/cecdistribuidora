@@ -15,15 +15,212 @@ function encontrarIndiceReceita(identificador){
 function escaparJSReceita(valor){
   return String(valor||"").replace(/\\/g,"\\\\").replace(/'/g,"\\'").replace(/\n/g," ");
 }
-function renderReceitas(){ conteudo.innerHTML=`<h2>Receitas</h2><button class="btn-primary" onclick="renderFormReceita()">+ Receita</button><button class="btn-secondary" onclick="renderListaReceitas()">Minhas Receitas</button><br><br><button class="btn-primary" onclick="renderGrupoSubgrupoReceita()">+ Grupos/Subgrupos</button><button class="btn-secondary" onclick="renderListaGrupoReceita()">Grupos</button>`; }
+let boletosImportadosReceita=[];
+let parcelasPlanejadasReceita=[];
+
+function normalizarFormaPagamentoReceita(valor){
+  const v=String(valor||'').toLowerCase();
+  return ['pix','boleto','dinheiro'].includes(v)?v:'';
+}
+function somenteDigitos(valor){ return String(valor||'').replace(/\D/g,''); }
+function formatarLinhaDigitavel(digitos){
+  const d=somenteDigitos(digitos);
+  if(d.length===47) return `${d.slice(0,5)}.${d.slice(5,10)} ${d.slice(10,15)}.${d.slice(15,21)} ${d.slice(21,26)}.${d.slice(26,32)} ${d.slice(32,33)} ${d.slice(33)}`;
+  if(d.length===48) return `${d.slice(0,12)} ${d.slice(12,24)} ${d.slice(24,36)} ${d.slice(36,48)}`;
+  return String(digitos||'').trim();
+}
+function dataBRparaISO(data){
+  const m=String(data||'').match(/(\d{2})\/(\d{2})\/(\d{4})/);
+  return m?`${m[3]}-${m[2]}-${m[1]}`:'';
+}
+function extrairLinhaDigitavelTexto(texto){
+  const limpo=String(texto||'').replace(/\u00a0/g,' ');
+  const candidatos=[];
+  const padroes=[
+    /(?:\d{5}[.\s]?\d{5}\s+\d{5}[.\s]?\d{6}\s+\d{5}[.\s]?\d{6}\s+\d\s+\d{14})/g,
+    /(?:\d{11,12}\s+\d{11,12}\s+\d{11,12}\s+\d{11,12})/g,
+    /(?:\d[\d.\s-]{44,90}\d)/g
+  ];
+  padroes.forEach(re=>{ (limpo.match(re)||[]).forEach(x=>{ const d=somenteDigitos(x); if(d.length===47||d.length===48) candidatos.push(d); }); });
+  if(!candidatos.length){
+    const blocos=limpo.match(/\d{44,48}/g)||[];
+    blocos.forEach(d=>{ if(d.length===47||d.length===48) candidatos.push(d); });
+  }
+  return candidatos.length?formatarLinhaDigitavel(candidatos[0]):'';
+}
+function extrairVencimentoTexto(texto){
+  const t=String(texto||'');
+  const reContexto=/(?:vencimento|data\s+de\s+vencimento)[^\d]{0,40}(\d{2}\/\d{2}\/\d{4})/i;
+  const m=t.match(reContexto);
+  if(m) return dataBRparaISO(m[1]);
+  const datas=[...(t.matchAll(/\b(\d{2}\/\d{2}\/\d{4})\b/g))].map(x=>x[1]);
+  return datas.length?dataBRparaISO(datas[0]):'';
+}
+function extrairValorBoletoTexto(texto){
+  const t=String(texto||'');
+  const padroes=[
+    /(?:valor\s+(?:do\s+)?documento|valor\s+cobrado|valor\s+nominal|valor\s+do\s+boleto)[^\d]{0,30}(?:R\$\s*)?([\d.]+,\d{2})/i,
+    /(?:R\$\s*)([\d.]+,\d{2})/i
+  ];
+  for(const re of padroes){ const m=t.match(re); if(m) return numeroBR(m[1]); }
+  return 0;
+}
+async function lerPaginasPDFBoleto(file){
+  if(!window.pdfjsLib) throw new Error('Leitor de PDF indisponível. Verifique a conexão com a internet e recarregue o sistema.');
+  try{ window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; }catch(_e){}
+  const buffer=await file.arrayBuffer();
+  const pdf=await window.pdfjsLib.getDocument({data:new Uint8Array(buffer)}).promise;
+  const paginas=[];
+  for(let i=1;i<=pdf.numPages;i++){
+    const page=await pdf.getPage(i);
+    const content=await page.getTextContent();
+    paginas.push({pagina:i,texto:content.items.map(item=>item.str||'').join(' ').replace(/\s+/g,' ').trim()});
+  }
+  return paginas;
+}
+function boletoExtraidoDeTexto(texto,arquivo,paginas){
+  return {arquivo,paginas,linhaDigitavel:extrairLinhaDigitavelTexto(texto),vencimento:extrairVencimentoTexto(texto),valor:extrairValorBoletoTexto(texto),importadoEm:new Date().toISOString()};
+}
+function extrairBoletosDasPaginas(paginas,arquivo){
+  const resultados=[];
+  let atual=null;
+  for(const p of paginas){
+    const item=boletoExtraidoDeTexto(p.texto,arquivo,String(p.pagina));
+    const temDados=!!(item.linhaDigitavel||item.vencimento||numeroBR(item.valor)>0);
+    if(!temDados){
+      if(atual){ atual.texto+=' '+p.texto; atual.paginas+=','+p.pagina; }
+      continue;
+    }
+    // Um novo vencimento ou uma nova linha digitável normalmente marca o início de outro boleto.
+    if(atual && ((item.linhaDigitavel&&item.linhaDigitavel!==atual.linhaDigitavel)||(item.vencimento&&atual.vencimento&&item.vencimento!==atual.vencimento))){
+      resultados.push(atual); atual=null;
+    }
+    if(!atual){ atual={...item,texto:p.texto}; }
+    else{
+      atual.texto+=' '+p.texto; atual.paginas+=','+p.pagina;
+      if(!atual.linhaDigitavel&&item.linhaDigitavel) atual.linhaDigitavel=item.linhaDigitavel;
+      if(!atual.vencimento&&item.vencimento) atual.vencimento=item.vencimento;
+      if(!numeroBR(atual.valor)&&numeroBR(item.valor)>0) atual.valor=item.valor;
+    }
+  }
+  if(atual) resultados.push(atual);
+  // Fallback: alguns bancos geram um boleto por página; se o agrupamento não separou mas há várias páginas com dados distintos, usa uma entrada por página.
+  if(resultados.length<=1 && paginas.length>1){
+    const porPagina=paginas.map(p=>boletoExtraidoDeTexto(p.texto,arquivo,String(p.pagina))).filter(b=>b.linhaDigitavel||b.vencimento||numeroBR(b.valor)>0);
+    const chaves=new Set(porPagina.map(b=>`${somenteDigitos(b.linhaDigitavel)}|${b.vencimento}|${numeroBR(b.valor)}`));
+    if(porPagina.length>1 && chaves.size>1) return porPagina;
+  }
+  return resultados.map(({texto,...b})=>b);
+}
+async function importarBoletosPDF(input){
+  const arquivos=[...(input?.files||[])];
+  if(!arquivos.length) return;
+  const status=document.getElementById('statusImportacaoBoleto');
+  if(status) status.textContent='Lendo boleto(s) e separando as parcelas...';
+  boletosImportadosReceita=[];
+  parcelasPlanejadasReceita=[];
+  for(const file of arquivos){
+    try{
+      const paginas=await lerPaginasPDFBoleto(file);
+      const encontrados=extrairBoletosDasPaginas(paginas,file.name);
+      if(encontrados.length) boletosImportadosReceita.push(...encontrados);
+      else boletosImportadosReceita.push({arquivo:file.name,paginas:`1-${paginas.length}`,linhaDigitavel:'',vencimento:'',valor:0,erro:'Nenhum boleto reconhecido'});
+    }catch(err){
+      console.error('Erro ao ler boleto',file.name,err);
+      boletosImportadosReceita.push({arquivo:file.name,paginas:'',linhaDigitavel:'',vencimento:'',valor:0,erro:err.message||'Falha na leitura'});
+    }
+  }
+  boletosImportadosReceita.sort((a,b)=>(a.vencimento||'9999-12-31').localeCompare(b.vencimento||'9999-12-31'));
+  const validos=boletosImportadosReceita.filter(b=>b.vencimento||b.valor||b.linhaDigitavel);
+  if(validos.length){
+    const primeiro=validos[0];
+    const venc=document.getElementById('vencimento'); if(venc&&primeiro.vencimento) venc.value=primeiro.vencimento;
+    const campoValor=document.getElementById('valor');
+    const valores=validos.filter(b=>numeroBR(b.valor)>0);
+    if(campoValor&&valores.length===validos.length){ campoValor.value=moedaBR(valores.reduce((s,b)=>s+numeroBR(b.valor),0)); }
+    const linha=document.getElementById('linhaDigitavel'); if(linha&&validos.length===1&&primeiro.linhaDigitavel) linha.value=primeiro.linhaDigitavel;
+  }
+  renderResumoBoletosImportados();
+  sincronizarParcelasPlanejadasReceita(true);
+}
+function atualizarBoletoImportado(indice,campo,valor){
+  if(!boletosImportadosReceita[indice]) return;
+  boletosImportadosReceita[indice][campo]=campo==='valor'?numeroBR(valor):valor;
+  sincronizarParcelasPlanejadasReceita(true);
+}
+function renderResumoBoletosImportados(){
+  const box=document.getElementById('resumoBoletosImportados');
+  const status=document.getElementById('statusImportacaoBoleto');
+  if(!box) return;
+  if(!boletosImportadosReceita.length){ box.innerHTML=''; if(status) status.textContent=''; return; }
+  const completos=boletosImportadosReceita.filter(b=>b.linhaDigitavel&&b.vencimento&&numeroBR(b.valor)>0).length;
+  if(status) status.textContent=`${boletosImportadosReceita.length} boleto(s) identificado(s). ${completos} com linha, vencimento e valor reconhecidos.`;
+  box.innerHTML=`<div style="overflow:auto;margin-top:10px"><table><tr><th>Arquivo/Página</th><th>Vencimento</th><th>Valor</th><th>Linha digitável</th></tr>${boletosImportadosReceita.map((b,i)=>`<tr>
+    <td>${escaparHTML((b.arquivo||'')+(b.paginas?' — pág. '+b.paginas:''))}</td>
+    <td><input type="date" value="${escaparAtributo(b.vencimento||'')}" onchange="atualizarBoletoImportado(${i},'vencimento',this.value)"></td>
+    <td><input data-moeda="br" value="${escaparAtributo(b.valor?moedaBR(numeroBR(b.valor)):'')}" onchange="atualizarBoletoImportado(${i},'valor',this.value)"></td>
+    <td><input value="${escaparAtributo(b.linhaDigitavel||'')}" placeholder="Confira ou cole manualmente" onchange="atualizarBoletoImportado(${i},'linhaDigitavel',this.value)"></td>
+  </tr>`).join('')}</table></div><p style="font-size:12px;color:#f59e0b;margin-top:8px">Confira os dados reconhecidos antes de salvar. PDFs digitalizados como imagem podem não ser lidos automaticamente.</p>`;
+}
+function valorParcelaPadraoReceita(total,qtd,indice){
+  const base=Math.floor((numeroBR(total)/qtd)*100)/100;
+  if(indice===qtd-1) return Math.round((numeroBR(total)-base*(qtd-1))*100)/100;
+  return base;
+}
+function atualizarParcelaPlanejadaReceita(indice,campo,valor){
+  if(!parcelasPlanejadasReceita[indice]) return;
+  parcelasPlanejadasReceita[indice][campo]=campo==='valor'?numeroBR(valor):valor;
+}
+function sincronizarParcelasPlanejadasReceita(preferirBoletos=false){
+  const tipo=document.getElementById('tipoVenda')?.value||'avista';
+  const indexAtual=document.getElementById('receitaEditandoId')?.value||'';
+  const box=document.getElementById('planejamentoParcelasReceita');
+  if(!box || indexAtual || tipo!=='prazo'){ if(box) box.innerHTML=''; return; }
+  const qtd=Math.max(1,parseInt(document.getElementById('qtdParcelas')?.value||1));
+  const total=numeroBR(document.getElementById('valor')?.value||0);
+  const forma=normalizarFormaPagamentoReceita(document.getElementById('formaPagamento')?.value);
+  const anterior=parcelasPlanejadasReceita.slice();
+  parcelasPlanejadasReceita=[];
+  for(let i=0;i<qtd;i++){
+    const boleto=forma==='boleto'?boletosImportadosReceita[i]:null;
+    const prev=anterior[i]||{};
+    parcelasPlanejadasReceita.push({
+      parcela:i+1,
+      vencimento:(preferirBoletos&&boleto?.vencimento)?boleto.vencimento:(prev.vencimento||boleto?.vencimento||''),
+      valor:(preferirBoletos&&numeroBR(boleto?.valor)>0)?numeroBR(boleto.valor):(numeroBR(prev.valor)>0?numeroBR(prev.valor):valorParcelaPadraoReceita(total,qtd,i)),
+      linhaDigitavel:boleto?.linhaDigitavel||prev.linhaDigitavel||'',
+      boletoArquivoNome:boleto?.arquivo||prev.boletoArquivoNome||'',
+      boletoPaginas:boleto?.paginas||prev.boletoPaginas||''
+    });
+  }
+  renderPlanejamentoParcelasReceita();
+}
+function renderPlanejamentoParcelasReceita(){
+  const box=document.getElementById('planejamentoParcelasReceita');
+  if(!box) return;
+  const forma=normalizarFormaPagamentoReceita(document.getElementById('formaPagamento')?.value);
+  if(!parcelasPlanejadasReceita.length){ box.innerHTML=''; return; }
+  box.innerHTML=`<div style="margin-top:12px;overflow:auto"><b>Conferência das parcelas</b><p style="font-size:12px;color:#94a3b8;margin:5px 0 8px">Cada parcela tem sua própria data. O sistema não cria vencimentos mensais automaticamente.</p><table><tr><th>Parcela</th><th>Vencimento</th><th>Valor</th>${forma==='boleto'?'<th>Boleto</th>':''}</tr>${parcelasPlanejadasReceita.map((p,i)=>`<tr><td>${i+1}/${parcelasPlanejadasReceita.length}</td><td><input type="date" value="${escaparAtributo(p.vencimento||'')}" onchange="atualizarParcelaPlanejadaReceita(${i},'vencimento',this.value)"></td><td><input data-moeda="br" value="${escaparAtributo(moedaBR(numeroBR(p.valor)))}" onchange="atualizarParcelaPlanejadaReceita(${i},'valor',this.value)"></td>${forma==='boleto'?`<td>${p.linhaDigitavel?'✓ Linha identificada':'⚠ Linha não identificada'}${p.boletoArquivoNome?`<br><small>${escaparHTML(p.boletoArquivoNome)}${p.boletoPaginas?' — pág. '+escaparHTML(p.boletoPaginas):''}</small>`:''}</td>`:''}</tr>`).join('')}</table></div>`;
+}
+function toggleFormaPagamentoReceita(){
+  const forma=normalizarFormaPagamentoReceita(document.getElementById('formaPagamento')?.value);
+  const boleto=document.getElementById('boxBoletoReceita');
+  const pix=document.getElementById('boxPixReceita');
+  if(boleto) boleto.style.display=forma==='boleto'?'block':'none';
+  if(pix) pix.style.display=forma==='pix'?'block':'none';
+  sincronizarParcelasPlanejadasReceita(forma==='boleto');
+}
+
+function renderReceitas(){ conteudo.innerHTML=`<h2>Receitas</h2><button class="btn-primary" onclick="renderFormReceita()">+ Receita</button><button class="btn-secondary" onclick="renderListaReceitas()">Minhas Receitas</button><button class="btn-primary" onclick="renderReguaCobranca()">📲 Régua de Cobrança</button><br><br><button class="btn-primary" onclick="renderGrupoSubgrupoReceita()">+ Grupos/Subgrupos</button><button class="btn-secondary" onclick="renderListaGrupoReceita()">Grupos</button>`; }
 
 function renderFormReceita(identificador=null){
   const index=encontrarIndiceReceita(identificador);
-  let r=index!==null?db.receitas[index]:{cliente:"",vendedor:"",conta:"",grupo:"",subgrupo:"",dataVenda:"",tipoVenda:"avista",vencimento:"",valor:"",situacao:"A receber",dataRecebimento:"",qtdParcelas:1,parcelaAtual:1};
+  let r=index!==null?db.receitas[index]:{cliente:"",vendedor:"",conta:"",grupo:"",subgrupo:"",dataVenda:"",tipoVenda:"avista",formaPagamento:"pix",vencimento:"",valor:"",situacao:"A receber",dataRecebimento:"",qtdParcelas:1,parcelaAtual:1,linhaDigitavel:""};
+  boletosImportadosReceita=[];
   const dataVendaPadrao = r.dataVenda || r.vencimento || "";
   const tipoPadrao = r.tipoVenda || "avista";
   const qtdPadrao = r.qtdParcelas || 1;
-  openModal(`<h3>${index===null?"Cadastrar":"Editar"} Receita ${index!==null && (r.tipoVenda||'avista')==='prazo' ? '- Parcela '+(r.parcelaAtual||1)+'/'+(r.qtdParcelas||1) : ''}</h3>
+  openModal(`<input type="hidden" id="receitaEditandoId" value="${index!==null?escaparAtributo(r.id||''):''}"><h3>${index===null?"Cadastrar":"Editar"} Receita ${index!==null && (r.tipoVenda||'avista')==='prazo' ? '- Parcela '+(r.parcelaAtual||1)+'/'+(r.qtdParcelas||1) : ''}</h3>
   <label>Cliente</label><select id="cliente">${db.clientes.map(c=>`<option ${c.nome===r.cliente?"selected":""}>${escaparHTML(c.nome)}</option>`).join("")}</select>
   <label>Vendedor</label><select id="vendedor">${db.vendedores.map(v=>`<option ${v.nome===r.vendedor?"selected":""}>${escaparHTML(v.nome)}</option>`).join("")}</select>
   <label>Conta</label><select id="conta">${db.contas.map(c=>`<option ${c.nome===r.conta?"selected":""}>${escaparHTML(c.nome)}</option>`).join("")}</select>
@@ -35,16 +232,36 @@ function renderFormReceita(identificador=null){
     <option value="avista" ${tipoPadrao==='avista'?"selected":""}>Venda à vista</option>
     <option value="prazo" ${tipoPadrao==='prazo'?"selected":""}>Venda a prazo / parcelada</option>
   </select>
-  <div id="boxParcelasReceita" style="display:none">
-    <label>Quantidade de parcelas</label><input type="number" id="qtdParcelas" value="${qtdPadrao}" min="1">
-    <p style="font-size:12px;color:#94a3b8;margin-top:6px">Ao cadastrar venda parcelada nova, o sistema cria uma receita para cada parcela. Na edição, altera somente a parcela aberta.</p>
+  <label>Forma de pagamento</label>
+  <select id="formaPagamento" onchange="toggleFormaPagamentoReceita()">
+    <option value="pix" ${normalizarFormaPagamentoReceita(r.formaPagamento)==='pix'?"selected":""}>PIX</option>
+    <option value="boleto" ${normalizarFormaPagamentoReceita(r.formaPagamento)==='boleto'?"selected":""}>Boleto</option>
+    <option value="dinheiro" ${normalizarFormaPagamentoReceita(r.formaPagamento)==='dinheiro'?"selected":""}>Dinheiro</option>
+  </select>
+  <div id="boxPixReceita" style="display:none;padding:10px 12px;margin-top:8px;border:1px solid #1e3a5f;border-radius:10px">
+    <b>PIX cadastrado:</b> ${escaparHTML(db.empresa.pix||'Não configurado')}
+    <div style="font-size:12px;color:#94a3b8;margin-top:5px">A chave pode ser alterada em Configurações → Dados da Empresa.</div>
   </div>
-  <label id="labelVencimentoReceita">Vencimento</label><input type="date" id="vencimento" value="${r.vencimento}">
-  <label>Valor ${index===null?'total':'da parcela'}</label><input id="valor" data-moeda="br" value="${moedaBR(numeroBR(r.valor))}">
+  <div id="boxBoletoReceita" style="display:none;padding:12px;margin-top:8px;border:1px solid #1e3a5f;border-radius:10px">
+    <label>Importar boleto(s) em PDF</label>
+    <input type="file" id="boletosPDF" accept="application/pdf,.pdf" multiple onchange="importarBoletosPDF(this)">
+    <p style="font-size:12px;color:#94a3b8;margin-top:6px">Você pode importar um único PDF do banco contendo vários boletos ou vários PDFs. O sistema tenta separar os boletos, identificar vencimento, valor e linha digitável e relacioná-los às parcelas pela ordem dos vencimentos. Confira antes de salvar.</p>
+    <div id="statusImportacaoBoleto" style="font-size:12px;margin-top:8px"></div>
+    <div id="resumoBoletosImportados"></div>
+    <label style="margin-top:10px">Linha digitável ${index!==null?'desta parcela':'(opcional, para um único boleto)'}</label>
+    <input id="linhaDigitavel" value="${escaparAtributo(r.linhaDigitavel||'')}" placeholder="Cole manualmente se o PDF não for reconhecido">
+  </div>
+  <div id="boxParcelasReceita" style="display:none">
+    <label>Quantidade de parcelas</label><input type="number" id="qtdParcelas" value="${qtdPadrao}" min="1" onchange="sincronizarParcelasPlanejadasReceita()" oninput="sincronizarParcelasPlanejadasReceita()">
+    <p style="font-size:12px;color:#94a3b8;margin-top:6px">Ao cadastrar uma venda parcelada, informe ou confira a data de cada parcela abaixo. Não existe periodicidade mensal automática.</p>
+    <div id="planejamentoParcelasReceita"></div>
+  </div>
+  <div id="boxVencimentoUnicoReceita"><label id="labelVencimentoReceita">Vencimento</label><input type="date" id="vencimento" value="${r.vencimento}"></div>
+  <label>Valor ${index===null?'total':'da parcela'}</label><input id="valor" data-moeda="br" value="${moedaBR(numeroBR(r.valor))}" onchange="sincronizarParcelasPlanejadasReceita()">
   <label>Situação</label><select id="situacao" onchange="toggleRecebimento()"><option ${r.situacao==="A receber"?"selected":""}>A receber</option><option ${r.situacao==="Recebido"?"selected":""}>Recebido</option></select>
   <div id="boxRecebimento" style="display:none"><label>Data recebimento</label><input type="date" id="dataRecebimento" value="${r.dataRecebimento||""}"></div>
   <div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveReceita('${index!==null?escaparJSReceita(r.id):''}')">Salvar</button></div>`);
-  setTimeout(()=>{ carregarSubgruposReceita(r.subgrupo); toggleRecebimento(); toggleParcelasReceita(); },100);
+  setTimeout(()=>{ carregarSubgruposReceita(r.subgrupo); toggleRecebimento(); toggleParcelasReceita(); toggleFormaPagamentoReceita(); sincronizarParcelasPlanejadasReceita(true); },100);
 }
 
 function carregarSubgruposReceita(sel=""){ subgrupo.innerHTML=db.subgruposReceitas.filter(s=>s.grupo===grupo.value).map(s=>`<option ${s.nome===sel?"selected":""}>${escaparHTML(s.nome)}</option>`).join(""); }
@@ -52,72 +269,144 @@ function toggleRecebimento(){ boxRecebimento.style.display=situacao.value==="Rec
 function toggleParcelasReceita(){
   const tipo=document.getElementById('tipoVenda')?.value||'avista';
   const box=document.getElementById('boxParcelasReceita');
-  const label=document.getElementById('labelVencimentoReceita');
-  if(box) box.style.display=tipo==='prazo'?'block':'none';
-  if(label) label.textContent=tipo==='prazo'?'Vencimento da 1ª parcela':'Vencimento / recebimento';
+  const boxVenc=document.getElementById('boxVencimentoUnicoReceita');
+  const editando=!!(document.getElementById('receitaEditandoId')?.value||'');
+  if(box) box.style.display=(tipo==='prazo'&&!editando)?'block':'none';
+  if(boxVenc) boxVenc.style.display=(tipo==='prazo'&&!editando)?'none':'block';
   const dv=document.getElementById('dataVenda');
   const venc=document.getElementById('vencimento');
   if(tipo==='avista' && dv && venc && !venc.value) venc.value=dv.value;
-}
-function addMesesDataISO(dataISO, meses){
-  if(!dataISO) return "";
-  const [ano,mes,dia]=dataISO.split('-').map(Number);
-  const d=new Date(ano, mes-1+meses, dia);
-  return d.toISOString().slice(0,10);
+  sincronizarParcelasPlanejadasReceita();
 }
 function gerarIdReceita(prefixo='REC'){
   return prefixo + '_' + Date.now() + '_' + Math.random().toString(36).slice(2,8);
 }
-async function saveReceita(identificador=null){ 
+async function saveReceita(identificador=null){
   const antesReceitas=clonarEstado(db.receitas), antesContas=clonarEstado(db.contas);
   const index=encontrarIndiceReceita(identificador);
-  const tipo=(document.getElementById('tipoVenda')?.value)||'avista';
-  const dataVendaValor=(document.getElementById('dataVenda')?.value) || vencimento.value;
-  const qtd=Math.max(1, parseInt((document.getElementById('qtdParcelas')?.value) || 1));
-  const valorTotal=numeroBR(valor.value);
-  // Venda à vista: o vencimento é automaticamente a mesma data da venda quando não informado.
-  // Isso garante que a coluna Vencimento nunca fique vazia para recebimentos à vista.
-  const vencimentoInformado=(document.getElementById('vencimento')?.value)||'';
-  const vencimentoBase=tipo==='avista' ? dataVendaValor : vencimentoInformado;
-  let transacaoAnterior=index!==null&&index!=="null"?db.receitas[index]:null;
+  const tipo=document.getElementById('tipoVenda')?.value||'avista';
+  const formaPagamento=normalizarFormaPagamentoReceita(document.getElementById('formaPagamento')?.value)||'pix';
+  const linhaDigitavelManual=(document.getElementById('linhaDigitavel')?.value||'').trim();
+  const dataVendaValor=(document.getElementById('dataVenda')?.value)||(document.getElementById('vencimento')?.value)||'';
+  const qtd=Math.max(1,parseInt(document.getElementById('qtdParcelas')?.value||1));
+  const valorTotal=numeroBR(document.getElementById('valor')?.value||0);
+  const vencimentoInformado=document.getElementById('vencimento')?.value||'';
+  const transacaoAnterior=index!==null?db.receitas[index]:null;
 
-  // Em edição, altera somente a receita/parcela aberta.
-  // Mantém id/vendaId para a parcela continuar ligada à venda original.
-  if(index!==null && index!=="null"){
-    let novaObj={
-      ...transacaoAnterior,
-      id: transacaoAnterior?.id || gerarIdReceita('REC'),
-      vendaId: transacaoAnterior?.vendaId || gerarIdReceita('VENDA'),
-      cliente:cliente.value,vendedor:vendedor.value,conta:conta.value,grupo:grupo.value,subgrupo:subgrupo.value,
-      dataVenda:dataVendaValor,tipoVenda:tipo,vencimento:vencimentoBase,valor:valorTotal,
-      situacao:situacao.value,dataRecebimento:situacao.value==="Recebido"?dataRecebimento.value:"",
-      qtdParcelas:transacaoAnterior?.qtdParcelas || qtd,parcelaAtual:transacaoAnterior?.parcelaAtual||1,
-      atualizadoEm:new Date().toISOString()
-    };
+  if(index!==null){
+    const vencimentoFinal=tipo==='avista'?(vencimentoInformado||dataVendaValor):vencimentoInformado;
+    if(!vencimentoFinal){ alert('Informe o vencimento desta receita.'); return false; }
+    const novaObj={...transacaoAnterior,id:transacaoAnterior?.id||gerarIdReceita('REC'),vendaId:transacaoAnterior?.vendaId||gerarIdReceita('VENDA'),cliente:cliente.value,vendedor:vendedor.value,conta:conta.value,grupo:grupo.value,subgrupo:subgrupo.value,dataVenda:dataVendaValor,tipoVenda:tipo,formaPagamento,vencimento:vencimentoFinal,valor:valorTotal,linhaDigitavel:formaPagamento==='boleto'?linhaDigitavelManual:'',situacao:situacao.value,dataRecebimento:situacao.value==='Recebido'?dataRecebimento.value:'',qtdParcelas:transacaoAnterior?.qtdParcelas||1,parcelaAtual:transacaoAnterior?.parcelaAtual||1,atualizadoEm:new Date().toISOString()};
     await ajustarSaldoPorTransacao('receita',novaObj,transacaoAnterior);
     db.receitas[index]=novaObj;
-  } else {
-    const parcelas = tipo==='prazo' ? qtd : 1;
-    const valorParcela = parcelas>1 ? Math.round((valorTotal/parcelas)*100)/100 : valorTotal;
+  }else if(tipo==='prazo'){
+    sincronizarParcelasPlanejadasReceita(formaPagamento==='boleto');
+    if(parcelasPlanejadasReceita.length!==qtd){ alert('Não foi possível montar todas as parcelas. Confira a quantidade informada.'); return false; }
+    const semData=parcelasPlanejadasReceita.findIndex(p=>!p.vencimento);
+    if(semData>=0){ alert(`Informe o vencimento da parcela ${semData+1}/${qtd}.`); return false; }
+    if(formaPagamento==='boleto'){
+      const semLinha=parcelasPlanejadasReceita.findIndex(p=>!String(p.linhaDigitavel||'').trim());
+      if(semLinha>=0 && !confirm(`A parcela ${semLinha+1}/${qtd} está sem linha digitável reconhecida. Deseja salvar mesmo assim e completar depois?`)) return false;
+    }
+    const soma=Math.round(parcelasPlanejadasReceita.reduce((t,p)=>t+numeroBR(p.valor),0)*100)/100;
+    if(Math.abs(soma-valorTotal)>0.01){
+      if(!confirm(`A soma das parcelas (${moedaBR(soma)}) é diferente do valor total da venda (${moedaBR(valorTotal)}). Deseja salvar com os valores das parcelas exibidos?`)) return false;
+    }
     const vendaId=gerarIdReceita('VENDA');
-    for(let n=1; n<=parcelas; n++){
-      let valorDaParcela = (n===parcelas) ? Math.round((valorTotal - valorParcela*(parcelas-1))*100)/100 : valorParcela;
-      let novaObj={
-        id:gerarIdReceita('REC'),vendaId:vendaId,
-        cliente:cliente.value,vendedor:vendedor.value,conta:conta.value,grupo:grupo.value,subgrupo:subgrupo.value,
-        dataVenda:dataVendaValor,tipoVenda:tipo,vencimento:tipo==='prazo'?addMesesDataISO(vencimentoBase,n-1):vencimentoBase,
-        valor:valorDaParcela,situacao:situacao.value,dataRecebimento:situacao.value==="Recebido"?dataRecebimento.value:"",
-        qtdParcelas:parcelas,parcelaAtual:n,criadoEm:new Date().toISOString(),atualizadoEm:new Date().toISOString()
-      };
+    for(let n=0;n<qtd;n++){
+      const plan=parcelasPlanejadasReceita[n];
+      const boleto=formaPagamento==='boleto'?boletosImportadosReceita[n]:null;
+      const novaObj={id:gerarIdReceita('REC'),vendaId,cliente:cliente.value,vendedor:vendedor.value,conta:conta.value,grupo:grupo.value,subgrupo:subgrupo.value,dataVenda:dataVendaValor,tipoVenda:'prazo',formaPagamento,vencimento:plan.vencimento,valor:numeroBR(plan.valor),linhaDigitavel:formaPagamento==='boleto'?String(plan.linhaDigitavel||'').trim():'',situacao:situacao.value,dataRecebimento:situacao.value==='Recebido'?dataRecebimento.value:'',qtdParcelas:qtd,parcelaAtual:n+1,criadoEm:new Date().toISOString(),atualizadoEm:new Date().toISOString()};
+      if(boleto){ novaObj.boletoArquivoNome=boleto.arquivo||''; novaObj.boletoPaginas=boleto.paginas||''; novaObj.boletoImportadoEm=boleto.importadoEm||new Date().toISOString(); }
       await ajustarSaldoPorTransacao('receita',novaObj,null);
       db.receitas.push(novaObj);
     }
+  }else{
+    const vencimentoFinal=vencimentoInformado||dataVendaValor;
+    if(!vencimentoFinal){ alert('Informe a data da venda/vencimento.'); return false; }
+    const novaObj={id:gerarIdReceita('REC'),vendaId:gerarIdReceita('VENDA'),cliente:cliente.value,vendedor:vendedor.value,conta:conta.value,grupo:grupo.value,subgrupo:subgrupo.value,dataVenda:dataVendaValor,tipoVenda:'avista',formaPagamento,vencimento:vencimentoFinal,valor:valorTotal,linhaDigitavel:formaPagamento==='boleto'?(boletosImportadosReceita[0]?.linhaDigitavel||linhaDigitavelManual||''):'',situacao:situacao.value,dataRecebimento:situacao.value==='Recebido'?dataRecebimento.value:'',qtdParcelas:1,parcelaAtual:1,criadoEm:new Date().toISOString(),atualizadoEm:new Date().toISOString()};
+    if(formaPagamento==='boleto'&&boletosImportadosReceita[0]){ const b=boletosImportadosReceita[0]; if(b.vencimento) novaObj.vencimento=b.vencimento; if(numeroBR(b.valor)>0) novaObj.valor=numeroBR(b.valor); novaObj.boletoArquivoNome=b.arquivo||''; novaObj.boletoPaginas=b.paginas||''; novaObj.boletoImportadoEm=b.importadoEm||new Date().toISOString(); }
+    await ajustarSaldoPorTransacao('receita',novaObj,null);
+    db.receitas.push(novaObj);
   }
   const ok=await aposAlterarFinanceiro('receitas');
   if(!ok){ db.receitas=antesReceitas; db.contas=antesContas; return false; }
-  closeModal();
-  mostrarToast("✓ Receita salva com sucesso! Dashboard atualizado.");
-  return true;
+  closeModal(); mostrarToast('✓ Receita salva com sucesso! Dashboard atualizado.'); return true;
+}
+
+
+function obterClienteReceita(r){
+  const nome=(r?.cliente||'').trim().toLowerCase();
+  return (db.clientes||[]).find(c=>(c.nome||'').trim().toLowerCase()===nome)||null;
+}
+
+function telefoneWhatsAppReceita(telefone){
+  let n=String(telefone||'').replace(/\D/g,'');
+  if(!n) return '';
+  // Telefones brasileiros cadastrados sem DDI recebem 55 automaticamente.
+  if(n.length===10||n.length===11) n='55'+n;
+  return n;
+}
+
+function dataBRReceita(iso){
+  if(!iso) return '';
+  const p=String(iso).split('-');
+  return p.length===3?`${p[2]}/${p[1]}/${p[0]}`:iso;
+}
+
+function diferencaDiasReceita(dataIso){
+  if(!dataIso) return 0;
+  const hoje=new Date(); hoje.setHours(0,0,0,0);
+  const alvo=new Date(dataIso+'T00:00:00'); alvo.setHours(0,0,0,0);
+  return Math.round((alvo-hoje)/86400000);
+}
+
+function montarMensagemCobrancaReceita(r){
+  const cliente=obterClienteReceita(r);
+  const nomeCompleto=((cliente?.nome||r.cliente||'').trim())||'';
+  const venc=r.vencimento||((r.tipoVenda||'avista')==='avista'?r.dataVenda:'');
+  const dias=diferencaDiasReceita(venc);
+  const valor=moedaBR(numeroBR(r.valor));
+  const forma=normalizarFormaPagamentoReceita(r.formaPagamento);
+  let situacao='';
+  if(venc){
+    if(dias<0) situacao=`com vencimento em *${dataBRReceita(venc)}*, no valor de *${valor}*, vencido há *${Math.abs(dias)} dia${Math.abs(dias)===1?'':'s'}*.`;
+    else if(dias===0) situacao=`com vencimento *hoje (${dataBRReceita(venc)})*, no valor de *${valor}*.`;
+    else situacao=`com vencimento em *${dataBRReceita(venc)}*, no valor de *${valor}*. Faltam *${dias} dia${dias===1?'':'s'}* para o vencimento.`;
+  }else situacao=`no valor de *${valor}*.`;
+
+  let pagamento='';
+  if(forma==='pix'){
+    const chave=(db.empresa?.pix||'').trim();
+    pagamento=chave?`\n\nPagamento via PIX:\n*${chave}*`:'\n\nPagamento via PIX.';
+  }else if(forma==='boleto'){
+    const linha=String(r.linhaDigitavel||'').trim();
+    pagamento=linha?`\n\nBoleto – Linha digitável:\n*${linha}*`:'\n\nPagamento via boleto. Entre em contato conosco caso precise da linha digitável.';
+  }else if(forma==='dinheiro'){
+    pagamento='';
+  }
+
+  return `Olá${nomeCompleto?', '+nomeCompleto:''}! Tudo bem?\n\nIdentificamos um pagamento ${situacao}${pagamento}\n\nCaso já tenha realizado o pagamento, por favor, desconsidere esta mensagem.\n\nAt.te,\n*C&C DISTRIBUIDORA*`;
+}
+
+function enviarWhatsAppReceita(i){
+  const r=db.receitas[i];
+  if(!r){ alert('Receita não encontrada.'); return; }
+  if(r.situacao==='Recebido'){ alert('Esta receita já está marcada como recebida.'); return; }
+  const cliente=obterClienteReceita(r);
+  if(!cliente){ alert('Cliente não localizado no cadastro. Confira o nome vinculado à receita.'); return; }
+  const telefone=telefoneWhatsAppReceita(cliente.telefone);
+  if(!telefone){ alert(`O cliente ${cliente.nome||r.cliente} não possui telefone cadastrado.`); return; }
+  const forma=normalizarFormaPagamentoReceita(r.formaPagamento);
+  if(forma==='pix' && !(db.empresa?.pix||'').trim()){
+    if(!confirm('A chave PIX da empresa não está cadastrada. Deseja abrir o WhatsApp mesmo assim?')) return;
+  }
+  if(forma==='boleto' && !String(r.linhaDigitavel||'').trim()){
+    if(!confirm('Esta parcela não possui linha digitável cadastrada. Deseja abrir o WhatsApp mesmo assim?')) return;
+  }
+  const msg=montarMensagemCobrancaReceita(r);
+  const url=`https://wa.me/${telefone}?text=${encodeURIComponent(msg)}`;
+  window.open(url,'_blank','noopener,noreferrer');
 }
 
 function renderListaReceitas(){
@@ -129,7 +418,7 @@ function renderListaReceitas(){
 
 function filtrarReceitas(){
   const hoje=new Date(),mes=fMes?.value||"Todas",conta=fConta?.value||"Todas",sit=fSituacao?.value||"Todas",busca=(fBuscaCliente?.value||"").toLowerCase().trim();
-  let html=`<table><tr><th>Data venda</th><th>Vencimento</th><th>Tipo</th><th>Parcela</th><th>Cliente</th><th>Vendedor</th><th>Conta</th><th>Grupo</th><th>Subgrupo</th><th>Valor</th><th>Situação</th><th>Ações</th></tr>`;
+  let html=`<table><tr><th>Data venda</th><th>Vencimento</th><th>Tipo</th><th>Pagamento</th><th>Parcela</th><th>Cliente</th><th>Vendedor</th><th>Conta</th><th>Grupo</th><th>Subgrupo</th><th>Valor</th><th>Situação</th><th>Cobrança</th><th>Ações</th></tr>`;
   const lista = db.receitas
     .map((r,i)=>({r,i}))
     .sort((a,b)=> new Date((b.r.vencimento||b.r.dataVenda||'1900-01-01')+"T00:00:00") - new Date((a.r.vencimento||a.r.dataVenda||'1900-01-01')+"T00:00:00"));
@@ -142,10 +431,34 @@ function filtrarReceitas(){
     if((mes==="Todas"||rm===mes)&&(conta==="Todas"||r.conta===conta)&&(sit==="Todas"||s===sit)&&(!busca||nomeCliente.includes(busca))){
       const tipoLabel=(r.tipoVenda||'avista')==='prazo'?'A prazo':'À vista';
       const parcelaLabel=(r.tipoVenda||'avista')==='prazo'?`${r.parcelaAtual||1}/${r.qtdParcelas||1}`:'-';
-      html+=`<tr><td>${r.dataVenda||r.vencimento||''}</td><td>${vencExibido||''}</td><td>${tipoLabel}</td><td>${parcelaLabel}</td><td>${escaparHTML(r.cliente||'')}</td><td>${escaparHTML(r.vendedor||"-")}</td><td>${escaparHTML(r.conta||'')}</td><td>${escaparHTML(r.grupo||'')}</td><td>${escaparHTML(r.subgrupo||'')}</td><td>${moedaBR(numeroBR(r.valor))}</td><td>${escaparHTML(s)}</td><td><button class="btn-primary" onclick="renderFormReceita('${escaparJSReceita(r.id)}')">Editar</button><button class="btn-secondary" onclick="baixarReceita(${i})">Baixa</button><button class="btn-danger" onclick="excluirReceita(${i})">Excluir</button></td></tr>`;
+      const formaLabel={pix:'PIX',boleto:'Boleto',dinheiro:'Dinheiro'}[normalizarFormaPagamentoReceita(r.formaPagamento)]||'Não informado';
+      html+=`<tr><td>${r.dataVenda||r.vencimento||''}</td><td>${vencExibido||''}</td><td>${tipoLabel}</td><td>${formaLabel}</td><td>${parcelaLabel}</td><td>${escaparHTML(r.cliente||'')}</td><td>${escaparHTML(r.vendedor||"-")}</td><td>${escaparHTML(r.conta||'')}</td><td>${escaparHTML(r.grupo||'')}</td><td>${escaparHTML(r.subgrupo||'')}</td><td>${moedaBR(numeroBR(r.valor))}</td><td>${escaparHTML(s)}</td><td>${s!=="Recebido"?`<button class="btn-primary" style="white-space:nowrap" onclick="enviarWhatsAppReceita(${i})" title="Enviar WhatsApp" aria-label="Enviar WhatsApp">📲</button>`:'-'}</td><td><button class="btn-primary" onclick="renderFormReceita('${escaparJSReceita(r.id)}')" title="Editar" aria-label="Editar">✏️</button><button class="btn-secondary" onclick="baixarReceita(${i})" title="Dar baixa" aria-label="Dar baixa">✅</button><button class="btn-danger" onclick="excluirReceita(${i})" title="Excluir" aria-label="Excluir">🗑️</button></td></tr>`;
     }
   });
   html+="</table>"; tabelaReceitas.innerHTML=html;
+}
+
+
+function renderReguaCobranca(){
+  const hoje=new Date(); hoje.setHours(0,0,0,0);
+  let itens=db.receitas.map((r,i)=>({r,i})).filter(({r})=>r.situacao!=="Recebido");
+  itens.sort((a,b)=>new Date((a.r.vencimento||a.r.dataVenda||'2999-12-31')+'T00:00:00')-new Date((b.r.vencimento||b.r.dataVenda||'2999-12-31')+'T00:00:00'));
+  let html=`<h2>Régua de Cobrança</h2><button class="btn-secondary" onclick="renderReceitas()">Voltar</button><p style="margin:14px 0;color:#94a3b8">Clique no ícone 📲 para abrir a conversa do cliente com a mensagem pronta. O envio só acontece quando você confirmar no WhatsApp.</p>`;
+  if(!itens.length){ conteudo.innerHTML=html+`<div class="card"><b>Nenhuma cobrança pendente.</b></div>`; return; }
+  html+=`<div style="overflow-x:auto"><table><tr><th>Cliente</th><th>Vencimento</th><th>Dias</th><th>Forma</th><th>Valor</th><th>Ação</th></tr>`;
+  itens.forEach(({r,i})=>{
+    const venc=r.vencimento||r.dataVenda||'';
+    let diasTexto='Sem vencimento';
+    if(venc){
+      const dv=new Date(venc+'T00:00:00');
+      const diff=Math.round((dv-hoje)/86400000);
+      diasTexto=diff<0?`Vencido há ${Math.abs(diff)} dia${Math.abs(diff)!==1?'s':''}`:diff===0?'Vence hoje':`Vence em ${diff} dia${diff!==1?'s':''}`;
+    }
+    const forma={pix:'PIX',boleto:'Boleto',dinheiro:'Dinheiro'}[normalizarFormaPagamentoReceita(r.formaPagamento)]||'Não informado';
+    html+=`<tr><td>${escaparHTML(r.cliente||'')}</td><td>${escaparHTML(venc)}</td><td><b>${escaparHTML(diasTexto)}</b></td><td>${forma}</td><td>${moedaBR(numeroBR(r.valor))}</td><td><button class="btn-primary" style="white-space:nowrap" onclick="enviarWhatsAppReceita(${i})" title="Enviar WhatsApp" aria-label="Enviar WhatsApp">📲</button></td></tr>`;
+  });
+  html+=`</table></div>`;
+  conteudo.innerHTML=html;
 }
 
 function baixarReceita(i){ const r=db.receitas[i]; openModal(`<h3>Baixar Receita</h3><table><tr><th>Vencimento</th><th>Data recebimento</th><th>Valor</th></tr><tr><td>${r.vencimento}</td><td><input type="date" id="dataReceb"></td><td><input id="valorReceb" data-moeda="br" value="${moedaBR(numeroBR(r.valor))}"></td></tr></table><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Fechar</button><button class="btn-primary" onclick="confirmarBaixaReceita(${i})">Baixar</button></div>`); }

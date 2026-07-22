@@ -5,7 +5,7 @@ let db = {
   contas:[],clientes:[],fornecedores:[],vendedores:[],
   despesas:[],gruposDespesas:[],subgruposDespesas:[],
   receitas:[],gruposReceitas:[],subgruposReceitas:[],
-  empresa:{nome:"",doc:"",end:"",cidade:"",estado:"",tel:"",email:""}
+  empresa:{nome:"",doc:"",end:"",cidade:"",estado:"",tel:"",email:"",pix:""}
 };
 
 let abaAtiva='dashboard', telaAtiva='contas', dashAtivo='geral';
@@ -28,7 +28,7 @@ async function carregarDadosFirebase(){
       contas:[],clientes:[],fornecedores:[],vendedores:[],
       despesas:[],gruposDespesas:[],subgruposDespesas:[],
       receitas:[],gruposReceitas:[],subgruposReceitas:[],
-      empresa:{nome:"",doc:"",end:"",cidade:"",estado:"",tel:"",email:""}
+      empresa:{nome:"",doc:"",end:"",cidade:"",estado:"",tel:"",email:"",pix:""}
     };
 
     const dbRef = window._dbRef(window._db);
@@ -609,6 +609,9 @@ function renderConfig(){
         <div style="flex:1"><label>Telefone</label><input type="text" id="emp-tel" value="${escaparAtributo(db.empresa.tel)}"></div>
         <div style="flex:1"><label>E-mail Empresa</label><input type="text" id="emp-email" value="${escaparAtributo(db.empresa.email)}"></div>
       </div>
+      <label>Chave PIX para cobranças</label>
+      <input type="text" id="emp-pix" placeholder="CPF/CNPJ, e-mail, telefone ou chave aleatória" value="${escaparAtributo(db.empresa.pix||'')}">
+      <p style="font-size:12px;color:#94a3b8;margin-top:6px">Usada automaticamente nas mensagens de cobrança quando a forma de pagamento for PIX.</p>
       <div style="margin-top:20px">
         <button class="btn-primary" onclick="salvarDadosEmpresa()">💾 Salvar no Firebase</button>
       </div>
@@ -663,7 +666,8 @@ async function salvarDadosEmpresa(){
     cidade:document.getElementById('emp-cidade').value,
     estado:document.getElementById('emp-estado').value,
     tel:document.getElementById('emp-tel').value,
-    email:document.getElementById('emp-email').value
+    email:document.getElementById('emp-email').value,
+    pix:document.getElementById('emp-pix').value.trim()
   };
   await persist('empresa');
   openModal(`<h3>✅ Sucesso!</h3><p>Perfil da empresa salvo no Firebase.</p><div class="modal-actions"><button class="btn-primary" onclick="closeModal()">OK</button></div>`);

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'erp-financeiro-pwa-v7-session-15min';
+const CACHE_NAME = 'cec-patch-parcelas-livres-v4';
 const APP_SHELL = [
   './',
   './index.html',

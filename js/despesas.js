@@ -45,7 +45,7 @@ function filtrarDespesas(){
     if(s!=="Pago"&&d.vencimento&&new Date(d.vencimento+"T00:00:00")<hoje) s="Pendente"; 
     let dm=d.vencimento?d.vencimento.slice(5,7)+"/"+d.vencimento.slice(2,4):""; 
     const nomeFornecedor=(d.fornecedor||"").toLowerCase();
-    if((mes==="Todas"||dm===mes)&&(conta==="Todas"||d.conta===conta)&&(sit==="Todas"||s===sit)&&(!busca||nomeFornecedor.includes(busca))) html+=`<tr><td>${d.vencimento||''}</td><td>${escaparHTML(d.fornecedor||'')}</td><td>${escaparHTML(d.conta||'')}</td><td>${escaparHTML(d.grupo||'')}</td><td>${escaparHTML(d.subgrupo||'')}</td><td>${moedaBR(numeroBR(d.valor))}</td><td>${escaparHTML(s)}</td><td><button class="btn-primary" onclick="renderFormDespesa(${i})">Editar</button><button class="btn-secondary" onclick="baixarDespesa(${i})">Baixa</button><button class="btn-danger" onclick="excluirDespesa(${i})">Excluir</button></td></tr>`; 
+    if((mes==="Todas"||dm===mes)&&(conta==="Todas"||d.conta===conta)&&(sit==="Todas"||s===sit)&&(!busca||nomeFornecedor.includes(busca))) html+=`<tr><td>${d.vencimento||''}</td><td>${escaparHTML(d.fornecedor||'')}</td><td>${escaparHTML(d.conta||'')}</td><td>${escaparHTML(d.grupo||'')}</td><td>${escaparHTML(d.subgrupo||'')}</td><td>${moedaBR(numeroBR(d.valor))}</td><td>${escaparHTML(s)}</td><td><button class="btn-primary" onclick="renderFormDespesa(${i})" title="Editar" aria-label="Editar">✏️</button><button class="btn-secondary" onclick="baixarDespesa(${i})" title="Dar baixa" aria-label="Dar baixa">✅</button><button class="btn-danger" onclick="excluirDespesa(${i})" title="Excluir" aria-label="Excluir">🗑️</button></td></tr>`; 
   });
   html+="</table>"; tabelaDespesas.innerHTML=html;
 }

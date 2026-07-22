@@ -1,0 +1,35 @@
+PATCH - FORMAS DE PAGAMENTO E IMPORTAÇÃO DE BOLETOS PDF
+
+1. Mantida a lógica existente de Venda à vista / Venda a prazo-parcelada.
+2. Adicionada Forma de pagamento: PIX, Boleto e Dinheiro.
+3. Adicionada chave PIX nas Configurações > Dados da Empresa.
+4. Para Boleto, é possível selecionar um ou vários PDFs.
+5. O sistema tenta extrair do PDF:
+   - linha digitável;
+   - vencimento;
+   - valor.
+6. Os dados reconhecidos são exibidos para conferência e podem ser corrigidos manualmente antes de salvar.
+7. Em venda parcelada, os PDFs são ordenados por vencimento e associados às parcelas na mesma ordem.
+8. Se a quantidade de PDFs for diferente da quantidade de parcelas, o sistema avisa antes de salvar.
+9. PDFs digitalizados somente como imagem podem não fornecer texto para leitura automática. Nesses casos, a linha digitável pode ser preenchida manualmente.
+10. Receitas antigas sem forma de pagamento continuam preservadas; na listagem aparecem como "Não informado" até serem editadas.
+
+Observação técnica: a leitura usa PDF.js carregado por CDN. O sistema necessita conexão para carregar o leitor na primeira utilização; depois o navegador/service worker poderá manter o recurso em cache conforme disponibilidade.
+
+
+ENVIO MANUAL VIA WHATSAPP
+- Adicionado botão WhatsApp nas receitas ainda não recebidas.
+- Usa o telefone do cadastro do cliente e adiciona DDI 55 quando necessário.
+- Monta mensagem conforme vencimento, dias em atraso, valor e forma de pagamento.
+- PIX usa a chave cadastrada da empresa; boleto usa a linha digitável da parcela.
+- O envio não é automático: abre WhatsApp/WhatsApp Web com a mensagem pronta para conferência e envio manual.
+
+PATCH PARCELAS COM VENCIMENTOS LIVRES
+- Removida a regra de vencimento mensal automático (+1 mês).
+- Venda parcelada nova exibe uma grade de conferência 1/N, 2/N, 3/N etc.
+- Cada parcela possui vencimento próprio e valor próprio antes de salvar.
+- Boleto: um único PDF com vários boletos (ou vários PDFs) tenta preencher cada parcela com vencimento, valor e linha digitável reais.
+- PIX/Dinheiro parcelado: vencimentos são informados manualmente, parcela por parcela.
+- O sistema bloqueia o salvamento quando alguma parcela está sem vencimento.
+- A régua de cobrança continua usando o vencimento individual de cada parcela.
+- Mantidos os ícones das ações e o nome completo cadastrado do cliente nas mensagens do WhatsApp.
