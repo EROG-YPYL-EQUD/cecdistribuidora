@@ -6,8 +6,49 @@ function renderDespesas(){ conteudo.innerHTML=`<h2>Despesas</h2><button class="b
 function renderFormDespesa(index=null){
   let d=index!==null?db.despesas[index]:{fornecedor:"",conta:"",grupo:"",subgrupo:"",vencimento:"",valor:"",situacao:"A pagar",dataPagamento:""};
   let pessoas=[...db.fornecedores,...db.vendedores];
-  openModal(`<h3>${index===null?"Cadastrar":"Editar"} Despesa</h3><label>Fornecedor / Vendedor</label><select id="fornecedor">${pessoas.map(p=>`<option ${p.nome===d.fornecedor?"selected":""}>${escaparHTML(p.nome)}</option>`).join("")}</select><label>Conta</label><select id="conta">${db.contas.map(c=>`<option ${c.nome===d.conta?"selected":""}>${escaparHTML(c.nome)}</option>`).join("")}</select><label>Grupo</label><select id="grupo" onchange="carregarSubgrupos()">${db.gruposDespesas.map(g=>`<option ${g===d.grupo?"selected":""}>${escaparHTML(g)}</option>`).join("")}</select><label>Subgrupo</label><select id="subgrupo"></select><label>Vencimento</label><input type="date" id="vencimento" value="${d.vencimento}"><label>Valor</label><input id="valor" data-moeda="br" value="${moedaBR(numeroBR(d.valor))}"><label>Situação</label><select id="situacao" onchange="togglePagamento()"><option ${d.situacao==="A pagar"?"selected":""}>A pagar</option><option ${d.situacao==="Pago"?"selected":""}>Pago</option></select><div id="boxPagamento" style="display:none"><label>Data pagamento</label><input type="date" id="dataPagamento" value="${d.dataPagamento||""}"></div><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveDespesa(${index})">Salvar</button></div>`);
+  openModal(`<h3>${index===null?"Cadastrar":"Editar"} Despesa</h3><label>Fornecedor / Vendedor</label><div id="fornecedorDespesaWrap" style="position:relative"><input id="fornecedor" autocomplete="off" placeholder="Digite o nome..." value="${escaparAtributo(d.fornecedor||"")}" onfocus="mostrarPessoasDespesa()" oninput="filtrarPessoasDespesa(this.value)" onkeydown="navegarPessoasDespesa(event)"><div id="listaPessoasDespesa" style="display:none;position:absolute;left:0;right:0;top:calc(100% + 2px);background:#0f172a;border:1px solid #334155;border-radius:0 0 10px 10px;max-height:280px;overflow-y:auto;z-index:10000;box-shadow:0 10px 20px rgba(0,0,0,.5)"></div></div><label>Conta</label><select id="conta">${db.contas.map(c=>`<option ${c.nome===d.conta?"selected":""}>${escaparHTML(c.nome)}</option>`).join("")}</select><label>Grupo</label><select id="grupo" onchange="carregarSubgrupos()">${db.gruposDespesas.map(g=>`<option ${g===d.grupo?"selected":""}>${escaparHTML(g)}</option>`).join("")}</select><label>Subgrupo</label><select id="subgrupo"></select><label>Vencimento</label><input type="date" id="vencimento" value="${d.vencimento}"><label>Valor</label><input id="valor" data-moeda="br" value="${moedaBR(numeroBR(d.valor))}"><label>Situação</label><select id="situacao" onchange="togglePagamento()"><option ${d.situacao==="A pagar"?"selected":""}>A pagar</option><option ${d.situacao==="Pago"?"selected":""}>Pago</option></select><div id="boxPagamento" style="display:none"><label>Data pagamento</label><input type="date" id="dataPagamento" value="${d.dataPagamento||""}"></div><div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveDespesa(${index})">Salvar</button></div>`);
   setTimeout(()=>{ carregarSubgrupos(d.subgrupo); togglePagamento(); },100);
+}
+
+function pessoasOrdenadasDespesa(){
+  return [...(db.fornecedores||[]),...(db.vendedores||[])].slice().sort((a,b)=>String(a?.nome||'').localeCompare(String(b?.nome||''),'pt-BR',{sensitivity:'base'}));
+}
+function renderPessoasDespesa(filtro=''){
+  const box=document.getElementById('listaPessoasDespesa');
+  const campo=document.getElementById('fornecedor');
+  if(!box||!campo) return;
+  const termo=String(filtro||'').trim().toLocaleLowerCase('pt-BR');
+  const pessoas=pessoasOrdenadasDespesa().filter(p=>String(p?.nome||'').toLocaleLowerCase('pt-BR').includes(termo));
+  box.innerHTML=pessoas.map(p=>{
+    const nome=String(p.nome||'');
+    return `<div data-pessoa-despesa="${escaparAtributo(nome)}" style="padding:10px 12px;color:#fff;background:#0f172a;cursor:pointer;font-size:13px;border-bottom:1px solid #1e293b" onmouseenter="this.style.background='#2563eb'" onmouseleave="this.style.background='#0f172a'" onclick="selecionarPessoaDespesa(this.dataset.pessoaDespesa)">${escaparHTML(nome)}</div>`;
+  }).join('');
+  box.style.display=pessoas.length?'block':'none';
+}
+function mostrarPessoasDespesa(){ renderPessoasDespesa(''); }
+function filtrarPessoasDespesa(valor){ renderPessoasDespesa(valor); }
+function selecionarPessoaDespesa(nome){
+  const campo=document.getElementById('fornecedor');
+  const box=document.getElementById('listaPessoasDespesa');
+  if(campo) campo.value=nome;
+  if(box) box.style.display='none';
+}
+function fecharListaPessoasDespesa(event){
+  const wrap=document.getElementById('fornecedorDespesaWrap');
+  if(wrap && !wrap.contains(event.target)){
+    const box=document.getElementById('listaPessoasDespesa');
+    if(box) box.style.display='none';
+  }
+}
+function navegarPessoasDespesa(event){
+  if(event.key==='Escape'){
+    const box=document.getElementById('listaPessoasDespesa');
+    if(box) box.style.display='none';
+  }
+}
+if(!window._listenerPessoasDespesa){
+  document.addEventListener('mousedown',fecharListaPessoasDespesa);
+  window._listenerPessoasDespesa=true;
 }
 
 function carregarSubgrupos(sel=""){ subgrupo.innerHTML=db.subgruposDespesas.filter(s=>s.grupo===grupo.value).map(s=>`<option ${s.nome===sel?"selected":""}>${escaparHTML(s.nome)}</option>`).join(""); }

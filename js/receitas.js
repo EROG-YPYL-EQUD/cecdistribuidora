@@ -221,7 +221,7 @@ function renderFormReceita(identificador=null){
   const tipoPadrao = r.tipoVenda || "avista";
   const qtdPadrao = r.qtdParcelas || 1;
   openModal(`<input type="hidden" id="receitaEditandoId" value="${index!==null?escaparAtributo(r.id||''):''}"><h3>${index===null?"Cadastrar":"Editar"} Receita ${index!==null && (r.tipoVenda||'avista')==='prazo' ? '- Parcela '+(r.parcelaAtual||1)+'/'+(r.qtdParcelas||1) : ''}</h3>
-  <label>Cliente</label><select id="cliente">${db.clientes.map(c=>`<option ${c.nome===r.cliente?"selected":""}>${escaparHTML(c.nome)}</option>`).join("")}</select>
+  <label>Cliente</label><div id="clienteReceitaWrap" style="position:relative"><input id="cliente" autocomplete="off" placeholder="Digite o nome do cliente..." value="${escaparAtributo(r.cliente||"")}" onfocus="mostrarClientesReceita()" oninput="filtrarClientesReceita(this.value)" onkeydown="navegarClientesReceita(event)"><div id="listaClientesReceita" style="display:none;position:absolute;left:0;right:0;top:calc(100% + 2px);background:#0f172a;border:1px solid #334155;border-radius:0 0 10px 10px;max-height:280px;overflow-y:auto;z-index:10000;box-shadow:0 10px 20px rgba(0,0,0,.5)"></div></div>
   <label>Vendedor</label><select id="vendedor">${db.vendedores.map(v=>`<option ${v.nome===r.vendedor?"selected":""}>${escaparHTML(v.nome)}</option>`).join("")}</select>
   <label>Conta</label><select id="conta">${db.contas.map(c=>`<option ${c.nome===r.conta?"selected":""}>${escaparHTML(c.nome)}</option>`).join("")}</select>
   <label>Grupo</label><select id="grupo" onchange="carregarSubgruposReceita()">${db.gruposReceitas.map(g=>`<option ${g===r.grupo?"selected":""}>${escaparHTML(g)}</option>`).join("")}</select>
@@ -262,6 +262,47 @@ function renderFormReceita(identificador=null){
   <div id="boxRecebimento" style="display:none"><label>Data recebimento</label><input type="date" id="dataRecebimento" value="${r.dataRecebimento||""}"></div>
   <div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveReceita('${index!==null?escaparJSReceita(r.id):''}')">Salvar</button></div>`);
   setTimeout(()=>{ carregarSubgruposReceita(r.subgrupo); toggleRecebimento(); toggleParcelasReceita(); toggleFormaPagamentoReceita(); sincronizarParcelasPlanejadasReceita(true); },100);
+}
+
+function clientesOrdenadosReceita(){
+  return (db.clientes||[]).slice().sort((a,b)=>String(a?.nome||'').localeCompare(String(b?.nome||''),'pt-BR',{sensitivity:'base'}));
+}
+function renderClientesReceita(filtro=''){
+  const box=document.getElementById('listaClientesReceita');
+  const campo=document.getElementById('cliente');
+  if(!box||!campo) return;
+  const termo=String(filtro||'').trim().toLocaleLowerCase('pt-BR');
+  const clientes=clientesOrdenadosReceita().filter(c=>String(c?.nome||'').toLocaleLowerCase('pt-BR').includes(termo));
+  box.innerHTML=clientes.map(c=>{
+    const nome=String(c.nome||'');
+    return `<div data-cliente-receita="${escaparAtributo(nome)}" style="padding:10px 12px;color:#fff;background:#0f172a;cursor:pointer;font-size:13px;border-bottom:1px solid #1e293b" onmouseenter="this.style.background='#2563eb'" onmouseleave="this.style.background='#0f172a'" onclick="selecionarClienteReceita(this.dataset.clienteReceita)">${escaparHTML(nome)}</div>`;
+  }).join('');
+  box.style.display=clientes.length?'block':'none';
+}
+function mostrarClientesReceita(){ renderClientesReceita(''); }
+function filtrarClientesReceita(valor){ renderClientesReceita(valor); }
+function selecionarClienteReceita(nome){
+  const campo=document.getElementById('cliente');
+  const box=document.getElementById('listaClientesReceita');
+  if(campo) campo.value=nome;
+  if(box) box.style.display='none';
+}
+function fecharListaClientesReceita(event){
+  const wrap=document.getElementById('clienteReceitaWrap');
+  if(wrap && !wrap.contains(event.target)){
+    const box=document.getElementById('listaClientesReceita');
+    if(box) box.style.display='none';
+  }
+}
+function navegarClientesReceita(event){
+  if(event.key==='Escape'){
+    const box=document.getElementById('listaClientesReceita');
+    if(box) box.style.display='none';
+  }
+}
+if(!window._listenerClientesReceita){
+  document.addEventListener('mousedown',fecharListaClientesReceita);
+  window._listenerClientesReceita=true;
 }
 
 function carregarSubgruposReceita(sel=""){ subgrupo.innerHTML=db.subgruposReceitas.filter(s=>s.grupo===grupo.value).map(s=>`<option ${s.nome===sel?"selected":""}>${escaparHTML(s.nome)}</option>`).join(""); }
